@@ -106,6 +106,10 @@ Both advisors run in **read-only mode** and cannot modify your project:
 - **Codex**: `--sandbox read-only`
 - **Gemini**: `--approval-mode plan`
 
+## Author
+
+Created by [DantesPeak85](https://github.com/DantesPeak85) with [Claude Code](https://claude.ai/code)
+
 ## License
 
 MIT
