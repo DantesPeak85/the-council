@@ -108,7 +108,7 @@ Both advisors run in **read-only mode** and cannot modify your project:
 
 ## Author
 
-Created by [DantesPeak85](https://github.com/DantesPeak85) with [Claude Code](https://claude.ai/code)
+Created by [Tom Wolinitz](https://www.linkedin.com/in/tom-wolinitz/) with [Claude Code](https://claude.ai/code)
 
 ## License
 
