@@ -110,7 +110,7 @@ Both advisors run in **read-only mode** and cannot modify your project:
 
 Created by [Tom Wolinitz](https://www.linkedin.com/in/tom-wolinitz/) with [Claude Code](https://claude.ai/code)
 
-Born from [Musical Memories Prime](https://github.com/DantesPeak85)
+More projects at [github.com/DantesPeak85](https://github.com/DantesPeak85)
 
 ## License
 
