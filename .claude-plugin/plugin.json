@@ -1,5 +1,11 @@
 {
   "name": "the-council",
   "description": "Multi-model advisory board — get second opinions from Codex and Gemini",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "author": {
+    "name": "Tom Wolinitz"
+  },
+  "repository": "https://github.com/DantesPeak85/the-council",
+  "license": "MIT",
+  "keywords": ["skills", "multi-model", "code-review", "advisory", "codex", "gemini"]
 }
