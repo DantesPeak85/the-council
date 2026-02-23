@@ -105,7 +105,7 @@ The script outputs file paths (last lines of stdout) containing the responses. R
 
 **Environment overrides:**
 - `CODEX_MODEL` — default: `gpt-5.3-codex`
-- `GEMINI_MODEL` — default: `gemini-3-pro-preview`
+- `GEMINI_MODEL` — default: `gemini-3.1-pro-preview`
 - `COUNCIL_TIMEOUT` — default: `300` (seconds)
 
 ### 4. Analyze and Present
@@ -130,7 +130,7 @@ The script outputs file paths (last lines of stdout) containing the responses. R
 ## Codex (gpt-5.3-codex)
 [Full Codex response]
 
-## Gemini (gemini-3-pro-preview)
+## Gemini (gemini-3.1-pro-preview)
 [Full Gemini response]
 
 ## Claude's Take
@@ -170,7 +170,7 @@ This ensures advisors never modify project files. If either CLI updates its perm
 Both advisors run at maximum capability:
 
 - **Codex**: Model `gpt-5.3-codex` with reasoning effort `xhigh` (set via `~/.codex/config.toml` key `model_reasoning_effort = "xhigh"`)
-- **Gemini**: Model `gemini-3-pro-preview` with thinking level `HIGH` (set via `~/.gemini/settings.json` in `modelConfigs`)
+- **Gemini**: Model `gemini-3.1-pro-preview` with thinking level `HIGH` (set via `~/.gemini/settings.json` in `modelConfigs`)
 
 If the user's config doesn't have these settings, advise them to add:
 
@@ -186,7 +186,7 @@ Gemini (`~/.gemini/settings.json`):
     "customAliases": {
       "council": {
         "modelConfig": {
-          "model": "gemini-3-pro-preview",
+          "model": "gemini-3.1-pro-preview",
           "generateContentConfig": {
             "thinkingConfig": { "thinkingLevel": "HIGH" }
           }
