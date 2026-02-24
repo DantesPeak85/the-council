@@ -13,7 +13,7 @@
 #
 # Environment:
 #   CODEX_MODEL    — Override Codex model (default: gpt-5.3-codex)
-#   GEMINI_MODEL   — Override Gemini model (default: gemini-3-pro-preview)
+#   GEMINI_MODEL   — Override Gemini model (default: auto, CLI selects)
 #   COUNCIL_TIMEOUT — Max seconds to wait per advisor (default: 300)
 
 set -euo pipefail
@@ -65,7 +65,7 @@ WORK_DIR="${2:-.}"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.3-codex}"
-GEMINI_MODEL="${GEMINI_MODEL:-gemini-3-pro-preview}"
+GEMINI_MODEL="${GEMINI_MODEL:-}"
 TIMEOUT_SECS="${COUNCIL_TIMEOUT:-300}"
 
 if [[ ! -f "$PROMPT_FILE" ]]; then
@@ -104,7 +104,7 @@ fi
 
 echo "Invoking The Council ($MODE)..."
 [[ "$RUN_CODEX" == "true" ]] && echo "  Codex model:  $CODEX_MODEL"
-[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model: $GEMINI_MODEL"
+[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model: ${GEMINI_MODEL:-auto}"
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s (${TIMEOUT_CMD:-none})"
 echo ""
@@ -143,11 +143,11 @@ fi
 if [[ "$RUN_GEMINI" == "true" ]]; then
   (
     cd "$WORK_DIR"
-    run_with_timeout gemini \
-      -m "$GEMINI_MODEL" \
-      --approval-mode plan \
-      -p "$PROMPT" \
-      --output-format text \
+    GEMINI_ARGS=(--approval-mode plan -p "$PROMPT" --output-format text)
+    if [[ -n "$GEMINI_MODEL" ]]; then
+      GEMINI_ARGS=(-m "$GEMINI_MODEL" "${GEMINI_ARGS[@]}")
+    fi
+    run_with_timeout gemini "${GEMINI_ARGS[@]}" \
       > "$GEMINI_OUT" \
       2>"$GEMINI_ERR" || {
         echo "Gemini invocation failed (exit $?). See $GEMINI_ERR" >&2
