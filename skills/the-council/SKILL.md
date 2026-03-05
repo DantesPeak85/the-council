@@ -18,6 +18,23 @@ Convene OpenAI Codex and Google Gemini as an advisory board. Both run in paralle
   { "experimental": { "plan": true } }
   ```
 
+## Permission Setup
+
+Before running any council scripts, request all necessary bash permissions upfront at the start of the session. This prevents permission prompts from interrupting the advisory flow mid-execution.
+
+Tell the user:
+
+```
+The Council needs to run bash scripts to invoke external advisors. I'll request permission for all of them now so the flow isn't interrupted.
+```
+
+Then run all three scripts in sequence to trigger permission grants:
+1. `bash <skill_dir>/scripts/council_preflight.sh` — CLI availability check
+2. `bash <skill_dir>/scripts/council_sync.sh <working_directory>` — context sync
+3. `bash <skill_dir>/scripts/council_invoke.sh` (with `--help` or a no-op) — advisor invocation
+
+Once permissions are granted, proceed with the workflow. The user will not be prompted again for these scripts during the session.
+
 ## Workflow
 
 ### 0. Preflight Check (First Invocation Only)
@@ -82,33 +99,133 @@ Select the appropriate template from [references/prompt-templates.md](references
 
 Write the composed prompt to a temporary file. Include all relevant context inline (diffs, error messages, plan text) — the advisors cannot read Claude's conversation history.
 
-### 3. Invoke The Council
+### 3. Invoke The Council (Progressive)
 
-Run the advisors based on the mode determined in Step 0:
+Invoke each advisor as a **separate background bash task** so results can be presented as they arrive.
 
-**Full Council (both available):**
+#### 3a. Launch Advisors as Background Tasks
+
+For **Full Council** mode, launch two separate background bash commands simultaneously:
+
 ```bash
-bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
-```
-
-**Codex-only mode:**
-```bash
+# Launch Codex as background task
 bash <skill_dir>/scripts/council_invoke.sh --codex-only <prompt_file> <working_directory>
 ```
 
-**Gemini-only mode:**
 ```bash
+# Launch Gemini as background task
 bash <skill_dir>/scripts/council_invoke.sh --gemini-only <prompt_file> <working_directory>
 ```
 
-The script outputs file paths (last lines of stdout) containing the responses. Read the response file(s).
+Run both commands using `run_in_background: true` in the Bash tool. Each produces its own temp directory (`/tmp/council_codex_YYYYMMDD_HHMMSS/` and `/tmp/council_gemini_YYYYMMDD_HHMMSS/`).
+
+For **single-advisor modes** (Codex-only or Gemini-only), launch only the available advisor as a single background task.
+
+#### 3b. Poll and Present Progressive Results
+
+After launching both tasks, poll for completion using non-blocking `TaskOutput` checks (with `block: false`). When the first advisor finishes:
+
+1. **Read its response** from the temp directory path printed in its output
+2. **Present the early result** to the user immediately:
+
+```
+## Early Result: {Advisor Name} ({model})
+
+{advisor response}
+
+---
+*Waiting for {other advisor name} to complete...*
+```
+
+3. **Continue polling** the second advisor
+
+When the second advisor finishes, read its response and proceed to Step 3.5 (question detection) and then Step 4 (synthesis).
+
+#### 3c. Handling Failures
+
+- If one advisor fails while the other succeeds, present the successful response and note the failure
+- If both fail, report the errors and suggest checking CLI authentication
+
+#### 3d. Fallback
+
+If progressive invocation is not possible (e.g., background tasks not supported), fall back to the single blocking call:
+
+```bash
+bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
+```
 
 **Environment overrides:**
 - `CODEX_MODEL` — default: `gpt-5.3-codex`
 - `GEMINI_MODEL` — default: `auto` (CLI selects best available model)
 - `COUNCIL_TIMEOUT` — default: `300` (seconds)
 
+### 3.5. Question Detection & Auto-Retry
+
+After reading each advisor's response (during progressive polling or after completion), check whether the response contains **questions directed at you** rather than analysis. Advisors sometimes ask clarifying questions instead of providing their assessment.
+
+#### Detecting Questions
+
+Scan the advisor response for patterns indicating it needs clarification rather than providing analysis:
+- Direct questions ("What is...", "Can you clarify...", "Which approach...", "Could you provide...")
+- Requests for information ("I need to know...", "Please share...", "It would help to understand...")
+- Conditional analysis ("If X then Y, but if Z then W — which is the case?")
+
+**Not all question marks are triggers.** Rhetorical questions, questions posed as part of analysis ("Have you considered...?"), and section headers ("What could go wrong?") are normal advisory output. Only trigger retry when the advisor is **unable to provide analysis without the answer**.
+
+**Heuristic:** If the response is short (under ~200 words) AND primarily consists of questions rather than analysis, treat it as a question response. If the response contains substantial analysis alongside questions, treat it as a normal response.
+
+#### Auto-Answer and Retry Flow
+
+When a question is detected in an advisor's response:
+
+1. **Extract the question(s)** from the response
+2. **Attempt to answer from project context** — search the codebase, CLAUDE.md, conversation history, and relevant files
+3. **Assess confidence:**
+   - **Confident** (answer clearly supported by project context): proceed to auto-retry
+   - **Unsure** (requires judgment or information not available): ask the user:
+     ```
+     {Advisor Name} asked a clarifying question instead of providing analysis:
+
+     > {advisor's question}
+
+     I'm not confident I can answer this from project context. What's the answer?
+     ```
+     Wait for the user's response before proceeding.
+
+4. **Compose retry context** — write the Q&A to a temporary context file:
+   ```
+   Question from {Advisor Name}: {question}
+   Answer: {answer from project context or user}
+
+   Please provide your analysis based on this clarification. Do not ask further questions about this topic.
+   ```
+
+5. **Re-invoke the same advisor** with the context file:
+   ```bash
+   bash <skill_dir>/scripts/council_invoke.sh --{advisor}-only --context-file <context_file> <prompt_file> <working_directory>
+   ```
+
+6. **Read the new response** and check again for questions (loop back to detection)
+
+#### Retry Guards
+
+- **Question tracking:** Keep a list of questions already asked by each advisor. If the same question (or substantially similar) appears again after a retry, stop retrying and present the best response received so far with a note about the unresolved question.
+- **Hard cap:** Maximum **3 retries per advisor**. After 3 retries, present whatever response was received with a note:
+  ```
+  Note: {Advisor Name} requested clarification {N} times. Presenting the best response received.
+  ```
+- **Per-advisor tracking:** Retry counts and question lists are tracked independently for Codex and Gemini. One advisor hitting its cap does not affect the other.
+
+#### Retry During Progressive Invocation
+
+When using progressive invocation (Step 3), retries happen per-advisor:
+- If one advisor finishes with a question, begin the retry flow for that advisor while the other is still running
+- If the other advisor finishes with analysis while the first is retrying, present its result immediately
+- Synthesis (Step 4) waits until all retries are complete and both advisors have final responses
+
 ### 4. Analyze and Present
+
+If you presented an early result during progressive polling (Step 3b), the user has already seen one advisor's response. Do not re-print it. Present only the new response and the synthesis.
 
 #### Full Council Mode (both advisors responded)
 
@@ -153,7 +270,8 @@ Present the single advisor's response with your own assessment:
 
 Remove temporary files after presenting results:
 - The prompt file
-- The response files (in the temp directory)
+- The response files (in the temp directories — both `council_codex_*` and `council_gemini_*`)
+- Any context files created during question retries (in the same temp directories)
 - AGENTS.md and GEMINI.md from the working directory
 
 ## Permissions and Safety

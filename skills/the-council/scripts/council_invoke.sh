@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # council_invoke.sh — Invoke Codex and Gemini in parallel, capture responses
 #
-# Usage: council_invoke.sh [--codex-only|--gemini-only] <prompt_file> [working_directory]
-#   --codex-only:      Only invoke Codex (skip Gemini)
-#   --gemini-only:     Only invoke Gemini (skip Codex)
-#   prompt_file:       Path to a text file containing the advisory prompt
-#   working_directory: defaults to current directory
+# Usage: council_invoke.sh [--codex-only|--gemini-only] [--context-file <path>] <prompt_file> [working_directory]
+#   --codex-only:         Only invoke Codex (skip Gemini)
+#   --gemini-only:        Only invoke Gemini (skip Codex)
+#   --context-file <path>: Append contents of this file to the prompt (for retry context)
+#   prompt_file:          Path to a text file containing the advisory prompt
+#   working_directory:    defaults to current directory
 #
 # Outputs: Paths to response files (one per line, last lines of stdout)
 #   Full mode:   codex response path, then gemini response path
@@ -21,6 +22,7 @@ set -euo pipefail
 # --- Parse flags ---
 RUN_CODEX=true
 RUN_GEMINI=true
+CONTEXT_FILE=""
 
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
@@ -31,6 +33,10 @@ while [[ "${1:-}" == --* ]]; do
     --gemini-only)
       RUN_CODEX=false
       shift
+      ;;
+    --context-file)
+      CONTEXT_FILE="${2:?--context-file requires a path argument}"
+      shift 2
       ;;
     *)
       echo "ERROR: Unknown flag: $1" >&2
@@ -84,8 +90,30 @@ if [[ "$RUN_GEMINI" == "true" ]] && ! command -v gemini &>/dev/null; then
 fi
 
 PROMPT="$(cat "$PROMPT_FILE")"
+
+# Append context file if provided (used for retry with Q&A clarification)
+if [[ -n "$CONTEXT_FILE" ]]; then
+  if [[ ! -f "$CONTEXT_FILE" ]]; then
+    echo "ERROR: Context file not found: $CONTEXT_FILE" >&2
+    exit 1
+  fi
+  PROMPT="${PROMPT}
+
+---
+Additional Context (follow-up clarification):
+---
+$(cat "$CONTEXT_FILE")"
+fi
+
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-TMPDIR_COUNCIL="${TMPDIR:-/tmp}/council_${TIMESTAMP}"
+if [[ "$RUN_CODEX" == "true" && "$RUN_GEMINI" == "true" ]]; then
+  DIR_LABEL="full"
+elif [[ "$RUN_CODEX" == "true" ]]; then
+  DIR_LABEL="codex"
+else
+  DIR_LABEL="gemini"
+fi
+TMPDIR_COUNCIL="${TMPDIR:-/tmp}/council_${DIR_LABEL}_${TIMESTAMP}"
 mkdir -p "$TMPDIR_COUNCIL"
 
 CODEX_OUT="$TMPDIR_COUNCIL/codex_response.md"
