@@ -13,7 +13,7 @@
 #   Single mode: only the active advisor's response path
 #
 # Environment:
-#   CODEX_MODEL    — Override Codex model (default: gpt-5.3-codex)
+#   CODEX_MODEL    — Override Codex model (default: gpt-5.4-codex)
 #   GEMINI_MODEL   — Override Gemini model (default: auto, CLI selects)
 #   COUNCIL_TIMEOUT — Max seconds to wait per advisor (default: 300)
 
@@ -70,7 +70,7 @@ PROMPT_FILE="${1:?Usage: council_invoke.sh [--codex-only|--gemini-only] <prompt_
 WORK_DIR="${2:-.}"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.3-codex}"
+CODEX_MODEL="${CODEX_MODEL:-gpt-5.4-codex}"
 GEMINI_MODEL="${GEMINI_MODEL:-}"
 TIMEOUT_SECS="${COUNCIL_TIMEOUT:-300}"
 
