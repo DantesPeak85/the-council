@@ -2,11 +2,18 @@
 # council_preflight.sh — Check CLI availability and authentication
 # Exit codes: 0 = at least one advisor available, 1 = none available
 # Outputs key=value status lines to stdout
-# Caches result in /tmp/council_preflight_<uid> for session reuse
+# Caches result in .council-tmp/preflight_cache for session reuse
+#
+# Usage: council_preflight.sh [working_directory]
+#   working_directory: defaults to current directory
 
 set -euo pipefail
 
-CACHE_FILE="/tmp/council_preflight_$(id -u)"
+WORK_DIR="${1:-.}"
+WORK_DIR="$(cd "$WORK_DIR" && pwd)"
+
+mkdir -p "${WORK_DIR}/.council-tmp"
+CACHE_FILE="${WORK_DIR}/.council-tmp/preflight_cache"
 
 # Return cached result if fresh (less than 2 hours old)
 if [[ -f "$CACHE_FILE" ]]; then

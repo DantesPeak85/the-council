@@ -29,7 +29,7 @@ The Council needs to run bash scripts to invoke external advisors. I'll request 
 ```
 
 Then run all three scripts in sequence to trigger permission grants:
-1. `bash <skill_dir>/scripts/council_preflight.sh` — CLI availability check
+1. `bash <skill_dir>/scripts/council_preflight.sh <working_directory>` — CLI availability check
 2. `bash <skill_dir>/scripts/council_sync.sh <working_directory>` — context sync
 3. `bash <skill_dir>/scripts/council_invoke.sh` (with `--help` or a no-op) — advisor invocation
 
@@ -42,7 +42,7 @@ Once permissions are granted, proceed with the workflow. The user will not be pr
 On the first council invocation in a session, run the preflight script to detect available advisors:
 
 ```bash
-bash <skill_dir>/scripts/council_preflight.sh
+bash <skill_dir>/scripts/council_preflight.sh <working_directory>
 ```
 
 Parse the output (key=value lines) and determine the operating mode:
@@ -117,7 +117,7 @@ bash <skill_dir>/scripts/council_invoke.sh --codex-only <prompt_file> <working_d
 bash <skill_dir>/scripts/council_invoke.sh --gemini-only <prompt_file> <working_directory>
 ```
 
-Run both commands using `run_in_background: true` in the Bash tool. Each produces its own temp directory (`/tmp/council_codex_YYYYMMDD_HHMMSS/` and `/tmp/council_gemini_YYYYMMDD_HHMMSS/`).
+Run both commands using `run_in_background: true` in the Bash tool. Each produces its own temp directory (`.council-tmp/council_codex_YYYYMMDD_HHMMSS/` and `.council-tmp/council_gemini_YYYYMMDD_HHMMSS/` inside the working directory).
 
 For **single-advisor modes** (Codex-only or Gemini-only), launch only the available advisor as a single background task.
 
@@ -270,8 +270,7 @@ Present the single advisor's response with your own assessment:
 
 Remove temporary files after presenting results:
 - The prompt file
-- The response files (in the temp directories — both `council_codex_*` and `council_gemini_*`)
-- Any context files created during question retries (in the same temp directories)
+- The `.council-tmp/` directory from the working directory (`rm -rf <working_directory>/.council-tmp/`) — this removes all response files, error logs, context files, and the preflight cache at once
 - AGENTS.md and GEMINI.md from the working directory
 
 ## Permissions and Safety

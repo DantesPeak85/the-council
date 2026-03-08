@@ -113,7 +113,7 @@ elif [[ "$RUN_CODEX" == "true" ]]; then
 else
   DIR_LABEL="gemini"
 fi
-TMPDIR_COUNCIL="${TMPDIR:-/tmp}/council_${DIR_LABEL}_${TIMESTAMP}"
+TMPDIR_COUNCIL="${WORK_DIR}/.council-tmp/council_${DIR_LABEL}_${TIMESTAMP}"
 mkdir -p "$TMPDIR_COUNCIL"
 
 CODEX_OUT="$TMPDIR_COUNCIL/codex_response.md"
