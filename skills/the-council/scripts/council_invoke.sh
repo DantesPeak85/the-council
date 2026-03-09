@@ -13,7 +13,7 @@
 #   Single mode: only the active advisor's response path
 #
 # Environment:
-#   CODEX_MODEL    — Override Codex model (default: gpt-5.4-codex)
+#   CODEX_MODEL    — Override Codex model (default: auto, from ~/.codex/config.toml)
 #   GEMINI_MODEL   — Override Gemini model (default: auto, CLI selects)
 #   COUNCIL_TIMEOUT — Max seconds to wait per advisor (default: 300)
 
@@ -70,9 +70,22 @@ PROMPT_FILE="${1:?Usage: council_invoke.sh [--codex-only|--gemini-only] <prompt_
 WORK_DIR="${2:-.}"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.4-codex}"
+CODEX_MODEL="${CODEX_MODEL:-}"
 GEMINI_MODEL="${GEMINI_MODEL:-}"
 TIMEOUT_SECS="${COUNCIL_TIMEOUT:-300}"
+
+# Resolve display names for models (show user what's actually being used)
+if [[ -n "$CODEX_MODEL" ]]; then
+  CODEX_MODEL_DISPLAY="$CODEX_MODEL"
+else
+  CODEX_MODEL_DISPLAY="$(grep '^model' "${HOME}/.codex/config.toml" 2>/dev/null | head -1 | sed 's/model *= *"\(.*\)"/\1/')"
+  CODEX_MODEL_DISPLAY="${CODEX_MODEL_DISPLAY:-unknown}"
+fi
+if [[ -n "$GEMINI_MODEL" ]]; then
+  GEMINI_MODEL_DISPLAY="$GEMINI_MODEL"
+else
+  GEMINI_MODEL_DISPLAY="auto"
+fi
 
 if [[ ! -f "$PROMPT_FILE" ]]; then
   echo "ERROR: Prompt file not found: $PROMPT_FILE" >&2
@@ -131,8 +144,8 @@ else
 fi
 
 echo "Invoking The Council ($MODE)..."
-[[ "$RUN_CODEX" == "true" ]] && echo "  Codex model:  $CODEX_MODEL"
-[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model: ${GEMINI_MODEL:-auto}"
+[[ "$RUN_CODEX" == "true" ]] && echo "  Codex model:  $CODEX_MODEL_DISPLAY"
+[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model: $GEMINI_MODEL_DISPLAY"
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s (${TIMEOUT_CMD:-none})"
 echo ""
@@ -153,12 +166,12 @@ GEMINI_PID=""
 if [[ "$RUN_CODEX" == "true" ]]; then
   (
     cd "$WORK_DIR"
-    run_with_timeout codex exec \
-      -m "$CODEX_MODEL" \
-      --full-auto \
-      --sandbox read-only \
-      -o "$CODEX_OUT" \
-      "$PROMPT" \
+    CODEX_ARGS=(exec --full-auto --sandbox read-only -o "$CODEX_OUT")
+    if [[ -n "$CODEX_MODEL" ]]; then
+      CODEX_ARGS+=(-m "$CODEX_MODEL")
+    fi
+    CODEX_ARGS+=("$PROMPT")
+    run_with_timeout codex "${CODEX_ARGS[@]}" \
       2>"$CODEX_ERR" || {
         echo "Codex invocation failed (exit $?). See $CODEX_ERR" >&2
         echo "[Codex failed to respond. Check $CODEX_ERR for details.]" > "$CODEX_OUT"

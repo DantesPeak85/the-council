@@ -155,7 +155,7 @@ bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
 ```
 
 **Environment overrides:**
-- `CODEX_MODEL` — default: `gpt-5.4-codex`
+- `CODEX_MODEL` — default: auto (from `~/.codex/config.toml`)
 - `GEMINI_MODEL` — default: `auto` (CLI selects best available model)
 - `COUNCIL_TIMEOUT` — default: `300` (seconds)
 
@@ -244,7 +244,7 @@ If you presented an early result during progressive polling (Step 3b), the user 
 **Side-by-side mode** (when user requests "show me both" or "side by side"):
 
 ```
-## Codex (gpt-5.4-codex)
+## Codex ({codex_model})
 [Full Codex response]
 
 ## Gemini
@@ -286,7 +286,7 @@ This ensures advisors never modify project files. If either CLI updates its perm
 
 Both advisors run at maximum capability:
 
-- **Codex**: Model `gpt-5.4-codex` with reasoning effort `xhigh` (set via `~/.codex/config.toml` key `model_reasoning_effort = "xhigh"`)
+- **Codex**: Model auto-selected from `~/.codex/config.toml` (override with `CODEX_MODEL` env var), reasoning effort `xhigh` (set via `~/.codex/config.toml` key `model_reasoning_effort = "xhigh"`)
 - **Gemini**: Model auto-selected by CLI (override with `GEMINI_MODEL` env var), thinking level `HIGH` (set via `~/.gemini/settings.json` in `modelConfigs`)
 
 If the user's config doesn't have these settings, advise them to add:

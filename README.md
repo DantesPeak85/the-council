@@ -95,7 +95,7 @@ model_reasoning_effort = "xhigh"
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CODEX_MODEL` | `gpt-5.4-codex` | Model for Codex advisor |
+| `CODEX_MODEL` | auto (CLI default) | Model for Codex advisor |
 | `GEMINI_MODEL` | `gemini-3-pro-preview` | Model for Gemini advisor |
 | `COUNCIL_TIMEOUT` | `300` | Max seconds per advisor |
 

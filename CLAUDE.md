@@ -40,7 +40,7 @@ All scripts use `set -euo pipefail`. Variables are quoted. Exit codes are meanin
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CODEX_MODEL` | `gpt-5.3-codex` | Codex advisor model |
+| `CODEX_MODEL` | auto (CLI default) | Codex advisor model |
 | `GEMINI_MODEL` | `gemini-3-pro-preview` | Gemini advisor model |
 | `COUNCIL_TIMEOUT` | `300` | Max seconds per advisor |
 
