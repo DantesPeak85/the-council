@@ -150,8 +150,21 @@ When the second advisor finishes, read its response and proceed to Step 3.5 (que
 
 #### 3c. Handling Failures
 
-- If one advisor fails while the other succeeds, present the successful response and note the failure
-- If both fail, report the errors and suggest checking CLI authentication
+When an advisor fails (non-zero exit, empty response file, or error patterns in output):
+
+1. **Read the error log first** — always read the `*_error.log` file from the temp directory before reporting failure:
+   - Codex: `<working_directory>/.council-tmp/council_codex_*/codex_error.log`
+   - Gemini: `<working_directory>/.council-tmp/council_gemini_*/gemini_error.log`
+2. **Read the response file** — even failed runs may have partial output worth presenting
+3. **Report the specific error** from the log, not a guess. Common failures:
+   - `empty response` — advisor ran but produced no text output
+   - `unproductive state` — Gemini entered a tool-call loop
+   - `Path not in workspace` — prompt referenced files outside the sandbox
+   - `RESOURCE_EXHAUSTED` / `rate limit` — API quota hit
+   - `Argument list too long` — prompt exceeds shell argument limit (~260KB on macOS)
+   - `command not found` — CLI not installed or not in PATH
+4. **If one advisor succeeds**, present its response and note the other's failure with the actual error
+5. **If both fail**, present both error logs and suggest checking CLI authentication (`codex auth` / `gemini auth`)
 
 #### 3d. Fallback
 
@@ -332,9 +345,11 @@ Gemini (`~/.gemini/settings.json`):
 
 ## Error Handling
 
-- If one advisor fails, present the other's response and note the failure
-- If both fail, report the errors from the log files and suggest checking CLI authentication
-- Timeout defaults to 5 minutes — suggest increasing `COUNCIL_TIMEOUT` for large reviews
+See **Section 3c** above for detailed failure diagnostics. Key rules:
+
+- **Never guess error messages** — always read the actual error log files before reporting failures
+- **Timeout** defaults to 5 minutes — suggest increasing `COUNCIL_TIMEOUT` for large reviews
+- **Empty responses** are caught by the invoke script's validation — the response file will contain the error details from stderr
 
 ## When to Convene The Council
 

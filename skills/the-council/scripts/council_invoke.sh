@@ -190,18 +190,17 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
   GEMINI_SANDBOX="$TMPDIR_COUNCIL/gemini_sandbox"
   mkdir -p "$GEMINI_SANDBOX"
 
-  # Write prompt to file for stdin delivery (avoids -p flag size limits on large prompts)
+  # Save prompt to file for diagnostics (auto-cleaned with .council-tmp/)
   GEMINI_PROMPT_FILE="$TMPDIR_COUNCIL/gemini_prompt.txt"
   printf '%s' "$PROMPT" > "$GEMINI_PROMPT_FILE"
 
   (
     cd "$GEMINI_SANDBOX"
-    GEMINI_ARGS=(--approval-mode plan --output-format text)
+    GEMINI_ARGS=(--approval-mode plan -p "$PROMPT" --output-format text)
     if [[ -n "$GEMINI_MODEL" ]]; then
       GEMINI_ARGS=(-m "$GEMINI_MODEL" "${GEMINI_ARGS[@]}")
     fi
     run_with_timeout gemini "${GEMINI_ARGS[@]}" \
-      < "$GEMINI_PROMPT_FILE" \
       > "$GEMINI_OUT" \
       2>"$GEMINI_ERR" || {
         echo "Gemini invocation failed (exit $?). See $GEMINI_ERR" >&2
