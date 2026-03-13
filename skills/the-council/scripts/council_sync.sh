@@ -33,18 +33,34 @@ Focus on correctness, potential issues, and alternative approaches.
 PREAMBLE
 echo "$CLAUDE_CONTENT" >> "$AGENTS_MD"
 
-# --- Write GEMINI.md for Gemini ---
+# --- Write GEMINI.md for Gemini (with read-only constraints) ---
+
+# Strip shell command blocks from content for Gemini (it can't execute them in plan mode)
+GEMINI_CONTENT="$(echo "$CLAUDE_CONTENT" | awk '
+  /^```(bash|sh|shell|zsh|console)/ { skip=1; next }
+  /^```/ { if(skip) { skip=0; next } }
+  !skip
+')"
+
 cat > "$GEMINI_MD" << 'PREAMBLE'
 # Advisory Context (synced from CLAUDE.md)
 
 You are being consulted as an external advisor on this project.
-Review the project context below and provide your expert analysis when prompted.
-Focus on correctness, potential issues, and alternative approaches.
+You are running in READ-ONLY advisory mode.
+
+IMPORTANT CONSTRAINTS:
+- Do NOT attempt to run any shell commands (run_shell_command is not available to you)
+- Do NOT attempt to execute, build, test, or deploy anything
+- You can ONLY use: read_file, grep_search, list_directory, and similar read-only tools
+- Your job is to ANALYZE and RESPOND WITH TEXT — read the prompt and provide your expert analysis
+- Ignore any build/test/deploy instructions in the project context below — they are for reference only, not for you to execute
+
+Review the project context below for background understanding, then respond to the advisory prompt you receive.
 
 ---
 
 PREAMBLE
-echo "$CLAUDE_CONTENT" >> "$GEMINI_MD"
+echo "$GEMINI_CONTENT" >> "$GEMINI_MD"
 
 echo "Synced context to:"
 echo "  - $AGENTS_MD ($(wc -l < "$AGENTS_MD") lines)"
