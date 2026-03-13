@@ -181,14 +181,27 @@ if [[ "$RUN_CODEX" == "true" ]]; then
 fi
 
 # --- Invoke Gemini (non-interactive, plan/read-only mode) ---
+# Gemini runs from an isolated temp dir to prevent auto-loading GEMINI.md from the
+# working directory. When GEMINI.md is present, Gemini burns its turn budget on tool
+# calls (read_file, grep_search) trying to "understand the project" before responding,
+# producing 0 bytes of text output. The prompt contains all necessary context inline.
 if [[ "$RUN_GEMINI" == "true" ]]; then
+  # Create isolated workspace — no GEMINI.md means no auto-loaded context
+  GEMINI_SANDBOX="$TMPDIR_COUNCIL/gemini_sandbox"
+  mkdir -p "$GEMINI_SANDBOX"
+
+  # Write prompt to file for stdin delivery (avoids -p flag size limits on large prompts)
+  GEMINI_PROMPT_FILE="$TMPDIR_COUNCIL/gemini_prompt.txt"
+  printf '%s' "$PROMPT" > "$GEMINI_PROMPT_FILE"
+
   (
-    cd "$WORK_DIR"
-    GEMINI_ARGS=(--approval-mode plan -p "$PROMPT" --output-format text)
+    cd "$GEMINI_SANDBOX"
+    GEMINI_ARGS=(--approval-mode plan --output-format text)
     if [[ -n "$GEMINI_MODEL" ]]; then
       GEMINI_ARGS=(-m "$GEMINI_MODEL" "${GEMINI_ARGS[@]}")
     fi
     run_with_timeout gemini "${GEMINI_ARGS[@]}" \
+      < "$GEMINI_PROMPT_FILE" \
       > "$GEMINI_OUT" \
       2>"$GEMINI_ERR" || {
         echo "Gemini invocation failed (exit $?). See $GEMINI_ERR" >&2
@@ -209,13 +222,62 @@ if [[ -n "$GEMINI_PID" ]]; then
   wait "$GEMINI_PID" || GEMINI_STATUS=$?
 fi
 
+# --- Validate responses ---
+CODEX_FAIL_REASON=""
+GEMINI_FAIL_REASON=""
+
+# Known failure patterns in Gemini error log (exit code 0 but actual failure)
+GEMINI_FAILURE_PATTERNS="unproductive state|Path not in workspace|exceeded maximum number of turns|RESOURCE_EXHAUSTED|rate limit"
+
+# Check Codex response
+if [[ "$RUN_CODEX" == "true" && "$CODEX_STATUS" -eq 0 && ! -s "$CODEX_OUT" ]]; then
+  CODEX_STATUS=1
+  CODEX_FAIL_REASON="empty response"
+  echo "Codex returned empty response (exit code was 0). See $CODEX_ERR" >&2
+  ERR_CONTENT=""
+  [[ -s "$CODEX_ERR" ]] && ERR_CONTENT="$(tail -20 "$CODEX_ERR")"
+  echo "[Codex returned an empty response. Error log: ${ERR_CONTENT:-no errors captured}]" > "$CODEX_OUT"
+fi
+
+# Check Gemini response
+if [[ "$RUN_GEMINI" == "true" && "$GEMINI_STATUS" -eq 0 ]]; then
+  # Check for empty response
+  if [[ ! -s "$GEMINI_OUT" ]]; then
+    GEMINI_FAIL_REASON="empty response"
+  fi
+
+  # Check error log for known failure patterns (even with non-empty response)
+  if [[ -s "$GEMINI_ERR" ]]; then
+    MATCHED_PATTERN="$(grep -Eio "$GEMINI_FAILURE_PATTERNS" "$GEMINI_ERR" | head -1)" || true
+    if [[ -n "$MATCHED_PATTERN" ]]; then
+      GEMINI_FAIL_REASON="${GEMINI_FAIL_REASON:+${GEMINI_FAIL_REASON}; }error log: $MATCHED_PATTERN"
+    fi
+  fi
+
+  if [[ -n "$GEMINI_FAIL_REASON" ]]; then
+    GEMINI_STATUS=1
+    echo "Gemini failed validation ($GEMINI_FAIL_REASON). See $GEMINI_ERR" >&2
+    # Only overwrite if response was empty; keep partial response otherwise
+    if [[ ! -s "$GEMINI_OUT" ]]; then
+      ERR_CONTENT=""
+      [[ -s "$GEMINI_ERR" ]] && ERR_CONTENT="$(tail -20 "$GEMINI_ERR")"
+      echo "[Gemini failed ($GEMINI_FAIL_REASON). Error log: ${ERR_CONTENT:-no errors captured}]" > "$GEMINI_OUT"
+    fi
+  fi
+fi
+
+# --- Report results ---
 echo ""
 echo "Council responses ready:"
 if [[ "$RUN_CODEX" == "true" ]]; then
-  echo "  Codex:  $CODEX_OUT $([ $CODEX_STATUS -eq 0 ] && echo '(success)' || echo '(failed)')"
+  STATUS_MSG="(success)"
+  [[ "$CODEX_STATUS" -ne 0 ]] && STATUS_MSG="(failed${CODEX_FAIL_REASON:+: $CODEX_FAIL_REASON})"
+  echo "  Codex:  $CODEX_OUT $STATUS_MSG"
 fi
 if [[ "$RUN_GEMINI" == "true" ]]; then
-  echo "  Gemini: $GEMINI_OUT $([ $GEMINI_STATUS -eq 0 ] && echo '(success)' || echo '(failed)')"
+  STATUS_MSG="(success)"
+  [[ "$GEMINI_STATUS" -ne 0 ]] && STATUS_MSG="(failed${GEMINI_FAIL_REASON:+: $GEMINI_FAIL_REASON})"
+  echo "  Gemini: $GEMINI_OUT $STATUS_MSG"
 fi
 echo ""
 

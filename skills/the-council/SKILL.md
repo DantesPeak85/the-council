@@ -73,17 +73,17 @@ The preflight result is cached for 2 hours — subsequent invocations skip this 
 
 ### 1. Sync Project Context
 
-Run the sync script to copy CLAUDE.md content into AGENTS.md (Codex) and GEMINI.md (Gemini):
+Run the sync script to copy CLAUDE.md content into AGENTS.md (for Codex):
 
 ```bash
 bash <skill_dir>/scripts/council_sync.sh <working_directory>
 ```
 
-This creates/overwrites both files with an advisory preamble + full CLAUDE.md content. Run this once per session or when CLAUDE.md changes.
+This creates/overwrites AGENTS.md with an advisory preamble + full CLAUDE.md content. Run this once per session or when CLAUDE.md changes. Gemini does not need a context file — it runs from an isolated sandbox and receives all context via the prompt.
 
-**Important:** After the council session, clean up the generated files:
+**Important:** After the council session, clean up the generated file:
 ```bash
-rm <working_directory>/AGENTS.md <working_directory>/GEMINI.md
+rm <working_directory>/AGENTS.md
 ```
 
 ### 2. Compose the Advisory Prompt
@@ -98,6 +98,13 @@ Select the appropriate template from [references/prompt-templates.md](references
 | General question | General Advisory |
 
 Write the composed prompt to a temporary file. Include all relevant context inline (diffs, error messages, plan text) — the advisors cannot read Claude's conversation history.
+
+**IMPORTANT — Inline everything:** Gemini runs in an isolated sandbox without access to the project directory. It CANNOT read project files, external paths like `~/.claude/plans/`, or any file outside its sandbox. When composing the prompt:
+
+- **Read all referenced files yourself** and embed their full contents inline in the prompt text
+- **Never include file paths** as references for the advisor to read (e.g., "see ~/.claude/plans/my-plan.md")
+- **Always paste the actual content** between delimiter markers (`---`) in the prompt
+- For large files (>1000 lines), include the most relevant sections with clear markers indicating what was omitted
 
 ### 3. Invoke The Council (Progressive)
 
@@ -268,10 +275,19 @@ Present the single advisor's response with your own assessment:
 
 ### 5. Cleanup
 
-Remove temporary files after presenting results:
+**CRITICAL: Do NOT clean up until ALL of the following conditions are met:**
+
+1. All advisor responses (including retries) have been **fully read into your context** (i.e., you have used the Read tool on every response file and have the content in your conversation)
+2. Synthesis (Step 4) is **complete and has been presented to the user**
+3. If running with `run_in_background: true`, ensure the background task has finished AND you have read all output files before cleanup
+
+**Why this matters:** Response files live inside `.council-tmp/`. If you delete that directory before reading the files, the responses are lost permanently.
+
+Once all conditions above are satisfied, remove temporary files:
+
 - The prompt file
 - The `.council-tmp/` directory from the working directory (`rm -rf <working_directory>/.council-tmp/`) — this removes all response files, error logs, context files, and the preflight cache at once
-- AGENTS.md and GEMINI.md from the working directory
+- AGENTS.md from the working directory
 
 ## Permissions and Safety
 
