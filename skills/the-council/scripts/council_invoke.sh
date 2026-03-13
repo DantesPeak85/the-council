@@ -181,14 +181,14 @@ if [[ "$RUN_CODEX" == "true" ]]; then
 fi
 
 # --- Invoke Gemini (non-interactive, plan/read-only mode) ---
-# Gemini runs from an isolated temp dir to prevent auto-loading GEMINI.md from the
-# working directory. When GEMINI.md is present, Gemini burns its turn budget on tool
-# calls (read_file, grep_search) trying to "understand the project" before responding,
-# producing 0 bytes of text output. The prompt contains all necessary context inline.
+# Gemini runs from an isolated temp dir OUTSIDE the project tree. Gemini CLI traverses
+# parent directories to find project context (CLAUDE.md, GEMINI.md, AGENTS.md). If the
+# sandbox is inside the project (e.g., .council-tmp/gemini_sandbox/), Gemini finds and
+# loads the project's context files, burns its turn budget on tool calls, and produces
+# 0 bytes of text output. Using mktemp -d creates the sandbox in /tmp/, fully isolated.
 if [[ "$RUN_GEMINI" == "true" ]]; then
-  # Create isolated workspace — no GEMINI.md means no auto-loaded context
-  GEMINI_SANDBOX="$TMPDIR_COUNCIL/gemini_sandbox"
-  mkdir -p "$GEMINI_SANDBOX"
+  # Create sandbox OUTSIDE the project tree — prevents Gemini from finding project context
+  GEMINI_SANDBOX="$(mktemp -d)"
 
   # Save prompt to file for diagnostics (auto-cleaned with .council-tmp/)
   GEMINI_PROMPT_FILE="$TMPDIR_COUNCIL/gemini_prompt.txt"
@@ -219,6 +219,11 @@ if [[ -n "$CODEX_PID" ]]; then
 fi
 if [[ -n "$GEMINI_PID" ]]; then
   wait "$GEMINI_PID" || GEMINI_STATUS=$?
+fi
+
+# Clean up Gemini sandbox (lives in /tmp/, not auto-cleaned with .council-tmp/)
+if [[ -n "${GEMINI_SANDBOX:-}" && -d "$GEMINI_SANDBOX" ]]; then
+  rm -rf "$GEMINI_SANDBOX"
 fi
 
 # --- Validate responses ---
