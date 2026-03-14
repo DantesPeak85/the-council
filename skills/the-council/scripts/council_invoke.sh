@@ -183,11 +183,10 @@ if [[ "$RUN_CODEX" == "true" ]]; then
 fi
 
 # --- Invoke Gemini (non-interactive, plan/read-only mode) ---
-# Gemini runs from an isolated temp dir OUTSIDE the project tree. Gemini CLI traverses
-# parent directories to find project context (CLAUDE.md, GEMINI.md, AGENTS.md). If the
-# sandbox is inside the project (e.g., .council-tmp/gemini_sandbox/), Gemini finds and
-# loads the project's context files, burns its turn budget on tool calls, and produces
-# 0 bytes of text output. Using mktemp -d creates the sandbox in /tmp/, fully isolated.
+# Gemini runs from an isolated temp dir OUTSIDE the project tree to prevent auto-loading
+# project context (CLAUDE.md, GEMINI.md, AGENTS.md). Additionally, HOME is overridden to
+# a constrained environment with maxSessionTurns=3 to prevent Gemini from burning its
+# entire turn budget on tool calls (read_file, grep_search) before producing text output.
 if [[ "$RUN_GEMINI" == "true" ]]; then
   # Create sandbox OUTSIDE the project tree — prevents Gemini from finding project context
   GEMINI_SANDBOX="$(mktemp -d)"
@@ -196,14 +195,46 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
   GEMINI_PROMPT_FILE="$TMPDIR_COUNCIL/gemini_prompt.txt"
   printf '%s' "$PROMPT" > "$GEMINI_PROMPT_FILE"
 
+  # Create constrained Gemini HOME — limits turn budget to prevent tool-call loops.
+  # Overriding HOME makes this the "user settings" layer (always trusted by Gemini CLI).
+  # maxSessionTurns=3: prompt → response → at most 1 tool call → final response.
+  GEMINI_HOME="$TMPDIR_COUNCIL/gemini_home"
+  mkdir -p "$GEMINI_HOME/.gemini"
+
+  # Copy auth credentials from real home so Gemini can authenticate.
+  # Gemini CLI stores auth in several possible files depending on version/config.
+  REAL_GEMINI_DIR="$HOME/.gemini"
+  for AUTH_FILE in oauth_creds.json google_accounts.json accounts.json installation_id state.json; do
+    if [[ -f "$REAL_GEMINI_DIR/$AUTH_FILE" ]]; then
+      cp "$REAL_GEMINI_DIR/$AUTH_FILE" "$GEMINI_HOME/.gemini/$AUTH_FILE"
+    fi
+  done
+  # Also copy oauth_creds directory if it exists (older auth format)
+  if [[ -d "$REAL_GEMINI_DIR/oauth_creds" ]]; then
+    cp -r "$REAL_GEMINI_DIR/oauth_creds" "$GEMINI_HOME/.gemini/oauth_creds"
+  fi
+
+  # Write constrained settings
+  cat > "$GEMINI_HOME/.gemini/settings.json" << 'SETTINGS'
+{
+  "model": {
+    "maxSessionTurns": 3
+  },
+  "security": {
+    "auth": {
+      "selectedType": "oauth-personal"
+    }
+  }
+}
+SETTINGS
+
   (
     cd "$GEMINI_SANDBOX"
-    GEMINI_ARGS=(--approval-mode plan --output-format text)
+    GEMINI_ARGS=(--approval-mode plan -p "$PROMPT" --output-format text)
     if [[ -n "$GEMINI_MODEL" ]]; then
       GEMINI_ARGS=(-m "$GEMINI_MODEL" "${GEMINI_ARGS[@]}")
     fi
-    run_with_timeout gemini "${GEMINI_ARGS[@]}" \
-      < "$GEMINI_PROMPT_FILE" \
+    HOME="$GEMINI_HOME" run_with_timeout gemini "${GEMINI_ARGS[@]}" \
       > "$GEMINI_OUT" \
       2>"$GEMINI_ERR" || {
         STATUS=$?
