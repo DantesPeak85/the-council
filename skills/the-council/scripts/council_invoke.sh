@@ -173,8 +173,10 @@ if [[ "$RUN_CODEX" == "true" ]]; then
     CODEX_ARGS+=("$PROMPT")
     run_with_timeout codex "${CODEX_ARGS[@]}" \
       2>"$CODEX_ERR" || {
-        echo "Codex invocation failed (exit $?). See $CODEX_ERR" >&2
+        STATUS=$?
+        echo "Codex invocation failed (exit $STATUS). See $CODEX_ERR" >&2
         echo "[Codex failed to respond. Check $CODEX_ERR for details.]" > "$CODEX_OUT"
+        exit "$STATUS"
       }
   ) &
   CODEX_PID=$!
@@ -196,15 +198,18 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
 
   (
     cd "$GEMINI_SANDBOX"
-    GEMINI_ARGS=(--approval-mode plan -p "$PROMPT" --output-format text)
+    GEMINI_ARGS=(--approval-mode plan --output-format text)
     if [[ -n "$GEMINI_MODEL" ]]; then
       GEMINI_ARGS=(-m "$GEMINI_MODEL" "${GEMINI_ARGS[@]}")
     fi
     run_with_timeout gemini "${GEMINI_ARGS[@]}" \
+      < "$GEMINI_PROMPT_FILE" \
       > "$GEMINI_OUT" \
       2>"$GEMINI_ERR" || {
-        echo "Gemini invocation failed (exit $?). See $GEMINI_ERR" >&2
+        STATUS=$?
+        echo "Gemini invocation failed (exit $STATUS). See $GEMINI_ERR" >&2
         echo "[Gemini failed to respond. Check $GEMINI_ERR for details.]" > "$GEMINI_OUT"
+        exit "$STATUS"
       }
   ) &
   GEMINI_PID=$!
@@ -221,26 +226,46 @@ if [[ -n "$GEMINI_PID" ]]; then
   wait "$GEMINI_PID" || GEMINI_STATUS=$?
 fi
 
-# Clean up Gemini sandbox (lives in /tmp/, not auto-cleaned with .council-tmp/)
+# Clean up Gemini sandbox on success; preserve on failure for debugging
 if [[ -n "${GEMINI_SANDBOX:-}" && -d "$GEMINI_SANDBOX" ]]; then
-  rm -rf "$GEMINI_SANDBOX"
+  if [[ "$GEMINI_STATUS" -eq 0 ]]; then
+    rm -rf "$GEMINI_SANDBOX"
+  else
+    echo "  Gemini sandbox preserved for debugging: $GEMINI_SANDBOX" >&2
+  fi
 fi
 
 # --- Validate responses ---
 CODEX_FAIL_REASON=""
 GEMINI_FAIL_REASON=""
 
-# Known failure patterns in Gemini error log (exit code 0 but actual failure)
-GEMINI_FAILURE_PATTERNS="unproductive state|Path not in workspace|exceeded maximum number of turns|RESOURCE_EXHAUSTED|rate limit"
+# Known failure patterns in error logs (exit code 0 but actual failure)
+GEMINI_FAILURE_PATTERNS="unproductive state|Path not in workspace|exceeded maximum number of turns|RESOURCE_EXHAUSTED|rate limit|Maximum session turns exceeded|Loop detected, stopping execution|Agent execution blocked|Agent execution stopped|No input provided via stdin|Argument list too long|E2BIG|429|quota|safety|policy|blocked"
+CODEX_FAILURE_PATTERNS="rate limit|context length|unauthorized|Argument list too long|E2BIG"
 
 # Check Codex response
-if [[ "$RUN_CODEX" == "true" && "$CODEX_STATUS" -eq 0 && ! -s "$CODEX_OUT" ]]; then
-  CODEX_STATUS=1
-  CODEX_FAIL_REASON="empty response"
-  echo "Codex returned empty response (exit code was 0). See $CODEX_ERR" >&2
-  ERR_CONTENT=""
-  [[ -s "$CODEX_ERR" ]] && ERR_CONTENT="$(tail -20 "$CODEX_ERR")"
-  echo "[Codex returned an empty response. Error log: ${ERR_CONTENT:-no errors captured}]" > "$CODEX_OUT"
+if [[ "$RUN_CODEX" == "true" && "$CODEX_STATUS" -eq 0 ]]; then
+  if [[ ! -s "$CODEX_OUT" ]]; then
+    CODEX_FAIL_REASON="empty response"
+  fi
+
+  # Check error log for known failure patterns
+  if [[ -s "$CODEX_ERR" ]]; then
+    MATCHED_PATTERN="$(grep -Eio "$CODEX_FAILURE_PATTERNS" "$CODEX_ERR" | head -1)" || true
+    if [[ -n "$MATCHED_PATTERN" ]]; then
+      CODEX_FAIL_REASON="${CODEX_FAIL_REASON:+${CODEX_FAIL_REASON}; }error log: $MATCHED_PATTERN"
+    fi
+  fi
+
+  if [[ -n "$CODEX_FAIL_REASON" ]]; then
+    CODEX_STATUS=1
+    echo "Codex failed validation ($CODEX_FAIL_REASON). See $CODEX_ERR" >&2
+    if [[ ! -s "$CODEX_OUT" ]]; then
+      ERR_CONTENT=""
+      [[ -s "$CODEX_ERR" ]] && ERR_CONTENT="$(tail -20 "$CODEX_ERR")"
+      echo "[Codex failed ($CODEX_FAIL_REASON). Error log: ${ERR_CONTENT:-no errors captured}]" > "$CODEX_OUT"
+    fi
+  fi
 fi
 
 # Check Gemini response
