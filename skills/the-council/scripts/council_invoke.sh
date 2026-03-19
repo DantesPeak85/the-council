@@ -214,19 +214,25 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
     cp -r "$REAL_GEMINI_DIR/oauth_creds" "$GEMINI_HOME/.gemini/oauth_creds"
   fi
 
-  # Write constrained settings
-  cat > "$GEMINI_HOME/.gemini/settings.json" << 'SETTINGS'
+  # Build constrained settings: copy user's settings (preserves auth type, preview
+  # features, etc.) and inject maxSessionTurns to prevent tool-call loops.
+  if [[ -f "$REAL_GEMINI_DIR/settings.json" ]]; then
+    python3 -c "
+import json, sys
+s = json.load(open(sys.argv[1]))
+s.setdefault('model', {})['maxSessionTurns'] = 3
+json.dump(s, open(sys.argv[2], 'w'), indent=2)
+" "$REAL_GEMINI_DIR/settings.json" "$GEMINI_HOME/.gemini/settings.json"
+  else
+    # No user settings — write minimal constrained settings
+    cat > "$GEMINI_HOME/.gemini/settings.json" << 'SETTINGS'
 {
   "model": {
     "maxSessionTurns": 3
-  },
-  "security": {
-    "auth": {
-      "selectedType": "oauth-personal"
-    }
   }
 }
 SETTINGS
+  fi
 
   (
     cd "$GEMINI_SANDBOX"
