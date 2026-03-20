@@ -197,8 +197,8 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
 
   # Temporarily inject maxSessionTurns into user's Gemini settings to prevent tool-call
   # loops. We modify the real settings so Gemini's auth (.env, keychain, OAuth) works
-  # normally — overriding HOME breaks too many auth paths. Settings are restored after
-  # Gemini finishes (see the wait/validation section below).
+  # normally — overriding HOME breaks too many auth paths. Settings are restored via
+  # trap on EXIT/INT/TERM so they're cleaned up even if the script is interrupted.
   GEMINI_SETTINGS="$HOME/.gemini/settings.json"
   GEMINI_SETTINGS_BACKUP=""
   if [[ -f "$GEMINI_SETTINGS" ]]; then
@@ -216,8 +216,20 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
     GEMINI_SETTINGS_BACKUP="__CREATED__"
   fi
 
+  # Ensure settings are restored even if the script is killed (Ctrl+C, SIGTERM, set -e abort)
+  restore_gemini_settings() {
+    if [[ -n "${GEMINI_SETTINGS_BACKUP:-}" ]]; then
+      if [[ "$GEMINI_SETTINGS_BACKUP" == "__CREATED__" ]]; then
+        rm -f "$GEMINI_SETTINGS"
+      elif [[ -f "$GEMINI_SETTINGS_BACKUP" ]]; then
+        cp "$GEMINI_SETTINGS_BACKUP" "$GEMINI_SETTINGS"
+      fi
+    fi
+  }
+  trap restore_gemini_settings EXIT
+
   (
-    cd "$GEMINI_SANDBOX"
+    cd "$GEMINI_SANDBOX" || exit 1
     GEMINI_ARGS=(--approval-mode plan -p "$PROMPT" --output-format text)
     if [[ -n "$GEMINI_MODEL" ]]; then
       GEMINI_ARGS=(-m "$GEMINI_MODEL" "${GEMINI_ARGS[@]}")
@@ -259,14 +271,8 @@ if [[ -n "$GEMINI_PID" ]]; then
   wait "$GEMINI_PID" || GEMINI_STATUS=$?
 fi
 
-# Restore original Gemini settings (remove injected maxSessionTurns)
-if [[ -n "${GEMINI_SETTINGS_BACKUP:-}" ]]; then
-  if [[ "$GEMINI_SETTINGS_BACKUP" == "__CREATED__" ]]; then
-    rm -f "$GEMINI_SETTINGS"
-  else
-    cp "$GEMINI_SETTINGS_BACKUP" "$GEMINI_SETTINGS"
-  fi
-fi
+# Gemini settings are restored automatically via the EXIT trap set during injection.
+# The trap handles normal exit, Ctrl+C (SIGINT), SIGTERM, and set -e aborts.
 
 # Clean up Gemini sandbox on success; preserve on failure for debugging
 if [[ -n "${GEMINI_SANDBOX:-}" && -d "$GEMINI_SANDBOX" ]]; then
