@@ -1,5 +1,7 @@
 # The Council
 
+*Parallel minds. Singular clarity.*
+
 A Claude Code skill that convenes OpenAI Codex and Google Gemini as an advisory board. Both run in parallel via their CLIs, with full project context, and return independent analyses that Claude synthesizes into a unified recommendation.
 
 ## What It Does
