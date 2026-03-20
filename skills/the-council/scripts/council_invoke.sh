@@ -230,6 +230,20 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
         echo "[Gemini failed to respond. Check $GEMINI_ERR for details.]" > "$GEMINI_OUT"
         exit "$STATUS"
       }
+
+    # Auto-retry once on transient empty response (exit 0, no stdout, no stderr).
+    # This catches intermittent Gemini CLI issues where the response stream drops.
+    if [[ ! -s "$GEMINI_OUT" && ! -s "$GEMINI_ERR" ]]; then
+      echo "Gemini returned empty response with no errors — retrying once..." >&2
+      run_with_timeout gemini "${GEMINI_ARGS[@]}" \
+        > "$GEMINI_OUT" \
+        2>"$GEMINI_ERR" || {
+          STATUS=$?
+          echo "Gemini retry failed (exit $STATUS). See $GEMINI_ERR" >&2
+          echo "[Gemini failed to respond on retry. Check $GEMINI_ERR for details.]" > "$GEMINI_OUT"
+          exit "$STATUS"
+        }
+    fi
   ) &
   GEMINI_PID=$!
 fi
