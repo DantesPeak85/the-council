@@ -184,9 +184,9 @@ fi
 
 # --- Invoke Gemini (non-interactive, plan/read-only mode) ---
 # Gemini runs from an isolated temp dir OUTSIDE the project tree to prevent auto-loading
-# project context (CLAUDE.md, GEMINI.md, AGENTS.md). Additionally, HOME is overridden to
-# a constrained environment with maxSessionTurns=3 to prevent Gemini from burning its
-# entire turn budget on tool calls (read_file, grep_search) before producing text output.
+# project context (CLAUDE.md, GEMINI.md, AGENTS.md). maxSessionTurns=3 is temporarily
+# injected into the user's ~/.gemini/settings.json to prevent Gemini from burning its
+# entire turn budget on tool calls before producing text output.
 if [[ "$RUN_GEMINI" == "true" ]]; then
   # Create sandbox OUTSIDE the project tree — prevents Gemini from finding project context
   GEMINI_SANDBOX="$(mktemp -d)"
@@ -195,43 +195,25 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
   GEMINI_PROMPT_FILE="$TMPDIR_COUNCIL/gemini_prompt.txt"
   printf '%s' "$PROMPT" > "$GEMINI_PROMPT_FILE"
 
-  # Create constrained Gemini HOME — limits turn budget to prevent tool-call loops.
-  # Overriding HOME makes this the "user settings" layer (always trusted by Gemini CLI).
-  # maxSessionTurns=3: prompt → response → at most 1 tool call → final response.
-  GEMINI_HOME="$TMPDIR_COUNCIL/gemini_home"
-  mkdir -p "$GEMINI_HOME/.gemini"
-
-  # Copy auth credentials from real home so Gemini can authenticate.
-  # Gemini CLI stores auth in several possible files depending on version/config.
-  REAL_GEMINI_DIR="$HOME/.gemini"
-  for AUTH_FILE in oauth_creds.json google_accounts.json accounts.json installation_id state.json; do
-    if [[ -f "$REAL_GEMINI_DIR/$AUTH_FILE" ]]; then
-      cp "$REAL_GEMINI_DIR/$AUTH_FILE" "$GEMINI_HOME/.gemini/$AUTH_FILE"
-    fi
-  done
-  # Also copy oauth_creds directory if it exists (older auth format)
-  if [[ -d "$REAL_GEMINI_DIR/oauth_creds" ]]; then
-    cp -r "$REAL_GEMINI_DIR/oauth_creds" "$GEMINI_HOME/.gemini/oauth_creds"
-  fi
-
-  # Build constrained settings: copy user's settings (preserves auth type, preview
-  # features, etc.) and inject maxSessionTurns to prevent tool-call loops.
-  if [[ -f "$REAL_GEMINI_DIR/settings.json" ]]; then
+  # Temporarily inject maxSessionTurns into user's Gemini settings to prevent tool-call
+  # loops. We modify the real settings so Gemini's auth (.env, keychain, OAuth) works
+  # normally — overriding HOME breaks too many auth paths. Settings are restored after
+  # Gemini finishes (see the wait/validation section below).
+  GEMINI_SETTINGS="$HOME/.gemini/settings.json"
+  GEMINI_SETTINGS_BACKUP=""
+  if [[ -f "$GEMINI_SETTINGS" ]]; then
+    GEMINI_SETTINGS_BACKUP="$TMPDIR_COUNCIL/gemini_settings_backup.json"
+    cp "$GEMINI_SETTINGS" "$GEMINI_SETTINGS_BACKUP"
     python3 -c "
 import json, sys
 s = json.load(open(sys.argv[1]))
 s.setdefault('model', {})['maxSessionTurns'] = 3
-json.dump(s, open(sys.argv[2], 'w'), indent=2)
-" "$REAL_GEMINI_DIR/settings.json" "$GEMINI_HOME/.gemini/settings.json"
+json.dump(s, open(sys.argv[1], 'w'), indent=2)
+" "$GEMINI_SETTINGS"
   else
-    # No user settings — write minimal constrained settings
-    cat > "$GEMINI_HOME/.gemini/settings.json" << 'SETTINGS'
-{
-  "model": {
-    "maxSessionTurns": 3
-  }
-}
-SETTINGS
+    mkdir -p "$HOME/.gemini"
+    printf '%s' '{"model":{"maxSessionTurns":3}}' > "$GEMINI_SETTINGS"
+    GEMINI_SETTINGS_BACKUP="__CREATED__"
   fi
 
   (
@@ -240,7 +222,7 @@ SETTINGS
     if [[ -n "$GEMINI_MODEL" ]]; then
       GEMINI_ARGS=(-m "$GEMINI_MODEL" "${GEMINI_ARGS[@]}")
     fi
-    HOME="$GEMINI_HOME" run_with_timeout gemini "${GEMINI_ARGS[@]}" \
+    run_with_timeout gemini "${GEMINI_ARGS[@]}" \
       > "$GEMINI_OUT" \
       2>"$GEMINI_ERR" || {
         STATUS=$?
@@ -261,6 +243,15 @@ if [[ -n "$CODEX_PID" ]]; then
 fi
 if [[ -n "$GEMINI_PID" ]]; then
   wait "$GEMINI_PID" || GEMINI_STATUS=$?
+fi
+
+# Restore original Gemini settings (remove injected maxSessionTurns)
+if [[ -n "${GEMINI_SETTINGS_BACKUP:-}" ]]; then
+  if [[ "$GEMINI_SETTINGS_BACKUP" == "__CREATED__" ]]; then
+    rm -f "$GEMINI_SETTINGS"
+  else
+    cp "$GEMINI_SETTINGS_BACKUP" "$GEMINI_SETTINGS"
+  fi
 fi
 
 # Clean up Gemini sandbox on success; preserve on failure for debugging
