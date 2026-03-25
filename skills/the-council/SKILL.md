@@ -351,6 +351,29 @@ See **Section 3c** above for detailed failure diagnostics. Key rules:
 - **Timeout** defaults to 5 minutes — suggest increasing `COUNCIL_TIMEOUT` for large reviews
 - **Empty responses** are caught by the invoke script's validation — the response file will contain the error details from stderr
 
+## Learning from the Council (Generalize Knowledge)
+
+After the council reveals gaps, blind spots, or better approaches that Claude missed, apply the learnings immediately:
+
+> **Run `/generalize-knowledge` at the end of the session.**
+
+Write to `CLAUDE.md` and `AGENTS.md`:
+- What the advisors caught that Claude missed
+- Why Claude missed it (root cause, not just symptom)
+- The corrected approach or pattern to use next time
+- Any project-specific conventions the council surfaced
+
+This closes the feedback loop: the council exposes blind spots → generalize-knowledge makes them permanent memory → future Claude sessions start with those lessons already loaded.
+
+**Template for the generalize-knowledge entry:**
+```
+## Council Finding — [date]
+- **Missed:** [what Claude got wrong or overlooked]
+- **Caught by:** Codex / Gemini / both
+- **Root cause:** [why Claude missed it]
+- **Lesson:** [concrete rule or pattern to apply next time]
+```
+
 ## When to Convene The Council
 
 - User explicitly asks for it ("ask the council", "get a second opinion", "council review")
