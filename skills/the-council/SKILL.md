@@ -353,26 +353,25 @@ See **Section 3c** above for detailed failure diagnostics. Key rules:
 
 ## Learning from the Council (Generalize Knowledge)
 
-After the council reveals gaps, blind spots, or better approaches that Claude missed, apply the learnings immediately:
+After presenting the council synthesis, reflect on what the advisors revealed — gaps, blind spots, better approaches, or project-specific conventions that Claude missed.
 
-> **Run `/generalize-knowledge` at the end of the session.**
+Generalize these learnings into `CLAUDE.md` and `AGENTS.md` so future agents start with those lessons already loaded. Write down any information that would be useful for a future agent working in this repository, including:
 
-Write to `CLAUDE.md` and `AGENTS.md`:
 - What the advisors caught that Claude missed
-- Why Claude missed it (root cause, not just symptom)
+- Why it was missed (root cause, not just symptom)
 - The corrected approach or pattern to use next time
 - Any project-specific conventions the council surfaced
 
-This closes the feedback loop: the council exposes blind spots → generalize-knowledge makes them permanent memory → future Claude sessions start with those lessons already loaded.
-
-**Template for the generalize-knowledge entry:**
+**Template for a council learning entry:**
 ```
-## Council Finding — [date]
-- **Missed:** [what Claude got wrong or overlooked]
+## Council Learning — [date]
+- **Insight:** [what the council revealed]
 - **Caught by:** Codex / Gemini / both
-- **Root cause:** [why Claude missed it]
-- **Lesson:** [concrete rule or pattern to apply next time]
+- **Root cause:** [why this was missed]
+- **Lesson:** [concrete rule or pattern for future sessions]
 ```
+
+This closes the feedback loop: the council exposes blind spots → learnings become permanent project memory → future sessions start smarter.
 
 ## When to Convene The Council
 

@@ -15,6 +15,10 @@ When you say "ask the council" or request a second opinion, Claude:
 
 Both advisors run at maximum capability (Codex with `xhigh` reasoning effort, Gemini with `HIGH` thinking level) and have full codebase access in read-only mode.
 
+### Learning Loop
+
+After each council session, Claude reflects on what the advisors revealed — gaps, blind spots, or better approaches — and generalizes those learnings into `CLAUDE.md` and `AGENTS.md`. This means future sessions in the same repository start with lessons from previous council deliberations already loaded.
+
 ## Installation
 
 ### Via Claude Code Plugin Marketplace

@@ -20,7 +20,7 @@ skills/the-council/
     └── council_invoke.sh           # Parallel CLI invocation with timeout, sandbox isolation + validation
 ```
 
-**Execution flow:** Preflight → Sync context → Compose prompt from template → Invoke advisors in parallel → Synthesize responses (consensus/divergence/recommendation).
+**Execution flow:** Preflight → Sync context → Compose prompt from template → Invoke advisors in parallel → Synthesize responses (consensus/divergence/recommendation) → Generalize learnings into CLAUDE.md/AGENTS.md.
 
 **Operating modes** are determined by preflight: Full Council (both CLIs), Codex-only, Gemini-only, or abort (neither available).
 
