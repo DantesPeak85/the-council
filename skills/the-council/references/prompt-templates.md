@@ -3,6 +3,16 @@
 Use these templates to construct the advisory prompt written to the prompt file.
 Adapt the template to the specific situation — do not use verbatim.
 
+## Context Instructions (per advisor)
+
+Replace `{advisor_context_instruction}` with the appropriate line:
+
+**Codex** (has filesystem access via read-only sandbox):
+> Project context: You have access to the full codebase via your tools. Reference specific files and line numbers.
+
+**Gemini** (no filesystem access — all context is inline):
+> IMPORTANT: All project context is provided inline above. Do NOT attempt to read files — no files are available. Analyze ONLY the content in this prompt.
+
 ## Code Review
 
 ```
@@ -19,7 +29,7 @@ Changes to review:
 {diff or file contents}
 ---
 
-Project context: You have access to the full codebase via your context file.
+{advisor_context_instruction}
 Be specific — reference file names and line numbers.
 ```
 
@@ -40,7 +50,7 @@ Analyze:
 4. **Dependencies**: Missing dependencies or ordering issues?
 5. **Recommendation**: Proceed as-is, modify (specify how), or rethink
 
-Project context: You have access to the full codebase via your context file.
+{advisor_context_instruction}
 Ground your analysis in the actual codebase, not hypotheticals.
 ```
 
@@ -65,7 +75,7 @@ Provide:
 3. **Fix proposal**: Specific code changes with rationale
 4. **Prevention**: How to prevent recurrence
 
-Project context: You have access to the full codebase via your context file.
+{advisor_context_instruction}
 Reference specific files and functions.
 ```
 
@@ -83,6 +93,6 @@ Provide:
 2. **Recommendation**: Your advised approach with reasoning
 3. **Caveats**: Risks, assumptions, or areas needing more info
 
-Project context: You have access to the full codebase via your context file.
+{advisor_context_instruction}
 Be concise and actionable.
 ```

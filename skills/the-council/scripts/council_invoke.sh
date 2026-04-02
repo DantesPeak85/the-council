@@ -191,6 +191,20 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
   # Create sandbox OUTSIDE the project tree — prevents Gemini from finding project context
   GEMINI_SANDBOX="$(mktemp -d)"
 
+  # Create workspace policy to deny file-access tools — Gemini receives all context
+  # inline via -p flag and has no files to read. Workspace policies (tier 3.x) override
+  # the default plan.toml (tier 1.x) which allows read_file/glob/etc. The deny decision
+  # removes tools from the model's memory entirely, so Gemini won't waste turns on them.
+  mkdir -p "$GEMINI_SANDBOX/.gemini/policies"
+  cat > "$GEMINI_SANDBOX/.gemini/policies/council.toml" << 'POLICY'
+[[rule]]
+toolName = ["read_file", "glob", "grep_search", "list_directory", "codebase_investigator"]
+decision = "deny"
+priority = 80
+modes = ["plan"]
+denyMessage = "All project context is provided inline in the prompt. No files are available to read."
+POLICY
+
   # Save prompt to file for diagnostics (auto-cleaned with .council-tmp/)
   GEMINI_PROMPT_FILE="$TMPDIR_COUNCIL/gemini_prompt.txt"
   printf '%s' "$PROMPT" > "$GEMINI_PROMPT_FILE"
