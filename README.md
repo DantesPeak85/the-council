@@ -110,7 +110,7 @@ model_reasoning_effort = "xhigh"
 Both advisors run in **read-only mode** and cannot modify your project:
 
 - **Codex**: `--sandbox read-only`
-- **Gemini**: `--approval-mode plan`
+- **Gemini**: `--approval-mode plan` + `--policy` deny list (write/execute tools removed from model memory)
 
 ## Author
 

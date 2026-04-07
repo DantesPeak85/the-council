@@ -79,7 +79,7 @@ Run the sync script to copy CLAUDE.md content into AGENTS.md (for Codex):
 bash <skill_dir>/scripts/council_sync.sh <working_directory>
 ```
 
-This creates/overwrites AGENTS.md with an advisory preamble + full CLAUDE.md content. Run this once per session or when CLAUDE.md changes. Gemini does not need a context file — it runs from an isolated sandbox and receives all context via the prompt.
+This creates/overwrites AGENTS.md with an advisory preamble + full CLAUDE.md content. Run this once per session or when CLAUDE.md changes. Gemini does not need a context file — it runs from the project directory with read access and receives task-specific context (diffs, plans, questions) via the prompt.
 
 **Important:** After the council session, clean up the generated file:
 ```bash
@@ -99,12 +99,12 @@ Select the appropriate template from [references/prompt-templates.md](references
 
 Write the composed prompt to a temporary file. Include all relevant context inline (diffs, error messages, plan text) — the advisors cannot read Claude's conversation history.
 
-**IMPORTANT — Inline everything:** Gemini runs in an isolated sandbox without access to the project directory. It CANNOT read project files, external paths like `~/.claude/plans/`, or any file outside its sandbox. When composing the prompt:
+**Context in prompts:** Both advisors now have filesystem access — Codex via read-only sandbox, Gemini via plan mode with read tools. However, task-specific context (diffs, error messages, plan text, conversation history) must still be inlined because advisors cannot access Claude's conversation or external paths like `~/.claude/plans/`.
 
-- **Read all referenced files yourself** and embed their full contents inline in the prompt text
-- **Never include file paths** as references for the advisor to read (e.g., "see ~/.claude/plans/my-plan.md")
-- **Always paste the actual content** between delimiter markers (`---`) in the prompt
-- For large files (>1000 lines), include the most relevant sections with clear markers indicating what was omitted
+- **Always inline:** diffs, error output, plan text, conversation excerpts, and any content from outside the project directory
+- **Can reference by path:** codebase files that advisors can read directly (e.g., "see `src/config.ts` for the current implementation")
+- For code review: the diff must be inlined (advisors don't have access to git staging), but surrounding context files can be referenced by path
+- For large files referenced in the prompt: include the most relevant sections inline, note the file path for full context
 
 ### 3. Invoke The Council (Progressive)
 
@@ -307,7 +307,7 @@ Once all conditions above are satisfied, remove temporary files:
 Both advisors run in **read-only mode** — they can explore the codebase but cannot modify it:
 
 - **Codex**: `--sandbox read-only` — filesystem writes are blocked by the sandbox
-- **Gemini**: `--approval-mode plan` — strict read-only mode; only read tools (read_file, glob, search) are allowed; write tools are blocked
+- **Gemini**: `--approval-mode plan` + `--policy` deny list — read-only mode with codebase access; read tools (read_file, glob, grep_search, list_directory) allowed; write/execute tools denied via policy and removed from model memory
 
 This ensures advisors never modify project files. If either CLI updates its permission model, verify read-only enforcement before updating the scripts.
 

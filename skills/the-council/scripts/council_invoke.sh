@@ -182,37 +182,37 @@ if [[ "$RUN_CODEX" == "true" ]]; then
   CODEX_PID=$!
 fi
 
-# --- Invoke Gemini (non-interactive, plan/read-only mode) ---
-# Gemini runs from an isolated temp dir OUTSIDE the project tree to prevent auto-loading
-# project context (CLAUDE.md, GEMINI.md, AGENTS.md). maxSessionTurns=3 is temporarily
-# injected into the user's ~/.gemini/settings.json to prevent Gemini from burning its
-# entire turn budget on tool calls before producing text output.
+# --- Invoke Gemini (non-interactive, plan/read-only mode with codebase access) ---
+# Gemini runs from the PROJECT DIRECTORY with --approval-mode plan, giving it read
+# access to the codebase via built-in tools (read_file, glob, grep_search, etc.).
+# A --policy file (user tier 4) denies write/execute tools, removing them from the
+# model's memory entirely. maxSessionTurns=10 is temporarily injected into
+# ~/.gemini/settings.json to allow useful read exploration while bounding turns.
 if [[ "$RUN_GEMINI" == "true" ]]; then
-  # Create sandbox OUTSIDE the project tree — prevents Gemini from finding project context
-  GEMINI_SANDBOX="$(mktemp -d)"
-
-  # Create workspace policy to deny file-access tools — Gemini receives all context
-  # inline via -p flag and has no files to read. Workspace policies (tier 3.x) override
-  # the default plan.toml (tier 1.x) which allows read_file/glob/etc. The deny decision
-  # removes tools from the model's memory entirely, so Gemini won't waste turns on them.
-  mkdir -p "$GEMINI_SANDBOX/.gemini/policies"
-  cat > "$GEMINI_SANDBOX/.gemini/policies/council.toml" << 'POLICY'
+  # Create policy file to deny write/execute tools via --policy flag (user tier 4).
+  # Plan mode's default plan.toml (tier 1) already denies writes at priority 60, but
+  # those tools remain visible to the model. Our tier-4 deny REMOVES them from model
+  # memory entirely, so Gemini won't waste turns attempting blocked operations.
+  # Note: workspace policies (.gemini/policies/) are disabled in Gemini CLI
+  # (disableWorkspacePolicies=true in policy.js), so --policy is the correct mechanism.
+  GEMINI_POLICY_FILE="$TMPDIR_COUNCIL/council_deny.toml"
+  cat > "$GEMINI_POLICY_FILE" << 'POLICY'
 [[rule]]
-toolName = ["read_file", "glob", "grep_search", "list_directory", "codebase_investigator"]
+toolName = ["run_shell_command", "write_file", "replace", "save_memory", "write_todos", "activate_skill", "enter_plan_mode", "exit_plan_mode", "ask_user", "google_web_search"]
 decision = "deny"
 priority = 80
 modes = ["plan"]
-denyMessage = "All project context is provided inline in the prompt. No files are available to read."
+deny_message = "You are a read-only advisor. Analyze the codebase using read tools only."
 POLICY
 
   # Save prompt to file for diagnostics (auto-cleaned with .council-tmp/)
   GEMINI_PROMPT_FILE="$TMPDIR_COUNCIL/gemini_prompt.txt"
   printf '%s' "$PROMPT" > "$GEMINI_PROMPT_FILE"
 
-  # Temporarily inject maxSessionTurns into user's Gemini settings to prevent tool-call
-  # loops. We modify the real settings so Gemini's auth (.env, keychain, OAuth) works
-  # normally — overriding HOME breaks too many auth paths. Settings are restored via
-  # trap on EXIT/INT/TERM so they're cleaned up even if the script is interrupted.
+  # Temporarily inject maxSessionTurns into user's Gemini settings to bound exploration.
+  # With codebase access, Gemini needs ~5-8 turns for reads + analysis; 10 gives headroom
+  # while preventing runaway loops. We modify the real settings so Gemini's auth works
+  # normally. Settings are restored via trap on EXIT/INT/TERM.
   GEMINI_SETTINGS="$HOME/.gemini/settings.json"
   GEMINI_SETTINGS_BACKUP=""
   if [[ -f "$GEMINI_SETTINGS" ]]; then
@@ -221,12 +221,12 @@ POLICY
     python3 -c "
 import json, sys
 s = json.load(open(sys.argv[1]))
-s.setdefault('model', {})['maxSessionTurns'] = 3
+s.setdefault('model', {})['maxSessionTurns'] = 10
 json.dump(s, open(sys.argv[1], 'w'), indent=2)
 " "$GEMINI_SETTINGS"
   else
     mkdir -p "$HOME/.gemini"
-    printf '%s' '{"model":{"maxSessionTurns":3}}' > "$GEMINI_SETTINGS"
+    printf '%s' '{"model":{"maxSessionTurns":10}}' > "$GEMINI_SETTINGS"
     GEMINI_SETTINGS_BACKUP="__CREATED__"
   fi
 
@@ -243,8 +243,8 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
   trap restore_gemini_settings EXIT
 
   (
-    cd "$GEMINI_SANDBOX" || exit 1
-    GEMINI_ARGS=(--approval-mode plan -p "$PROMPT" --output-format text)
+    cd "$WORK_DIR" || exit 1
+    GEMINI_ARGS=(--approval-mode plan --policy "$GEMINI_POLICY_FILE" -p "$PROMPT" --output-format text)
     if [[ -n "$GEMINI_MODEL" ]]; then
       GEMINI_ARGS=(-m "$GEMINI_MODEL" "${GEMINI_ARGS[@]}")
     fi
@@ -287,15 +287,6 @@ fi
 
 # Gemini settings are restored automatically via the EXIT trap set during injection.
 # The trap handles normal exit, Ctrl+C (SIGINT), SIGTERM, and set -e aborts.
-
-# Clean up Gemini sandbox on success; preserve on failure for debugging
-if [[ -n "${GEMINI_SANDBOX:-}" && -d "$GEMINI_SANDBOX" ]]; then
-  if [[ "$GEMINI_STATUS" -eq 0 ]]; then
-    rm -rf "$GEMINI_SANDBOX"
-  else
-    echo "  Gemini sandbox preserved for debugging: $GEMINI_SANDBOX" >&2
-  fi
-fi
 
 # --- Validate responses ---
 CODEX_FAIL_REASON=""

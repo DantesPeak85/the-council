@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # council_sync.sh — Sync project context to Codex (AGENTS.md)
 #
-# Gemini no longer needs GEMINI.md — it runs from an isolated sandbox directory
-# (see council_invoke.sh) to prevent auto-loading project context that causes it
-# to burn its turn budget on tool calls instead of producing text output.
+# Gemini does not need AGENTS.md — it runs from the project directory with read access
+# to the codebase and receives task-specific context via the prompt.
 #
 # Usage: council_sync.sh [working_directory]
 #   working_directory: defaults to current directory

@@ -17,7 +17,7 @@ skills/the-council/
 └── scripts/
     ├── council_preflight.sh        # Detects available CLIs + auth status (cached 2h)
     ├── council_sync.sh             # Copies CLAUDE.md → AGENTS.md (Codex only)
-    └── council_invoke.sh           # Parallel CLI invocation with timeout, sandbox isolation + validation
+    └── council_invoke.sh           # Parallel CLI invocation with timeout, policy enforcement + validation
 ```
 
 **Execution flow:** Preflight → Sync context → Compose prompt from template → Invoke advisors in parallel → Synthesize responses (consensus/divergence/recommendation) → Generalize learnings into CLAUDE.md/AGENTS.md.
@@ -26,8 +26,8 @@ skills/the-council/
 
 ## Key Design Decisions
 
-- **Read-only enforcement**: Codex uses `--sandbox read-only`, Gemini uses `--approval-mode plan`. Advisors cannot modify files.
-- **Gemini sandbox isolation**: Gemini runs from an empty temp directory to prevent auto-loading GEMINI.md, which causes it to burn its turn budget on tool calls. All context is embedded inline in the prompt.
+- **Read-only enforcement**: Codex uses `--sandbox read-only`, Gemini uses `--approval-mode plan` + `--policy` deny list. Advisors cannot modify files.
+- **Gemini codebase access**: Gemini runs from the project directory with `--approval-mode plan` and a `--policy` deny list. It has read access via built-in tools (read_file, glob, grep_search, etc.). Write/execute tools are denied via policy (user tier 4), removing them from model memory entirely.
 - **Parallel execution**: Both advisors run as background processes with configurable timeout (`COUNCIL_TIMEOUT`, default 300s).
 - **NVM compatibility**: `council_invoke.sh` loads NVM environment to find globally-installed CLI tools.
 - **macOS support**: Uses `gtimeout` (from coreutils) when available, falls back to `timeout` or no timeout.
@@ -47,4 +47,4 @@ All scripts use `set -euo pipefail`. Variables are quoted. Exit codes are meanin
 
 ## Temp Files
 
-Invocation creates `.council-tmp/council_YYYYMMDD_HHMMSS/` in the working directory containing `{codex,gemini}_{response.md,error.log}`, plus `gemini_sandbox/` (isolated workspace) and `gemini_prompt.txt` (stdin delivery). Preflight cache lives at `.council-tmp/preflight_cache`. Context sync creates `AGENTS.md` in the working directory. All temp files are cleaned up with `rm -rf .council-tmp/`; AGENTS.md must be removed separately.
+Invocation creates `.council-tmp/council_YYYYMMDD_HHMMSS/` in the working directory containing `{codex,gemini}_{response.md,error.log}`, `gemini_prompt.txt` (prompt diagnostics), and `council_deny.toml` (Gemini policy file). Preflight cache lives at `.council-tmp/preflight_cache`. Context sync creates `AGENTS.md` in the working directory. All temp files are cleaned up with `rm -rf .council-tmp/`; AGENTS.md must be removed separately.
