@@ -26,8 +26,8 @@ skills/the-council/
 
 ## Key Design Decisions
 
-- **Read-only enforcement**: Codex uses `--sandbox read-only`, Gemini uses `--approval-mode plan` + `--policy` deny list. Advisors cannot modify files.
-- **Gemini codebase access**: Gemini runs from the project directory with `--approval-mode plan` and a `--policy` deny list. It has read access via built-in tools (read_file, glob, grep_search, etc.). Write/execute tools are denied via policy (user tier 4), removing them from model memory entirely.
+- **Read-only enforcement**: Codex uses `--sandbox read-only`, Gemini uses `tools.core` allowlist + `--policy` deny list. Advisors cannot modify files.
+- **Gemini codebase access**: Gemini runs from the project directory with `--approval-mode plan`. Tool restriction uses two layers: (1) `tools.core` allowlist in settings.json registers only read-only tools (`ReadFileTool`, `GlobTool`, `GrepTool`, `LSTool`) — unregistered tools are excluded from declarations AND redacted from the system prompt; (2) `--policy` deny list (user tier 4) handles subagent tools and any remaining tools not controlled by `tools.core`. Note: the TOML policy field is `deny_message` (snake_case) — the loader converts it to camelCase internally.
 - **Parallel execution**: Both advisors run as background processes with configurable timeout (`COUNCIL_TIMEOUT`, default 300s).
 - **NVM compatibility**: `council_invoke.sh` loads NVM environment to find globally-installed CLI tools.
 - **macOS support**: Uses `gtimeout` (from coreutils) when available, falls back to `timeout` or no timeout.

@@ -189,10 +189,14 @@ fi
 # model's memory entirely. maxSessionTurns=10 is temporarily injected into
 # ~/.gemini/settings.json to allow useful read exploration while bounding turns.
 if [[ "$RUN_GEMINI" == "true" ]]; then
-  # Create policy file to deny write/execute tools via --policy flag (user tier 4).
-  # Plan mode's default plan.toml (tier 1) already denies writes at priority 60, but
-  # those tools remain visible to the model. Our tier-4 deny REMOVES them from model
-  # memory entirely, so Gemini won't waste turns attempting blocked operations.
+  # Tool restriction uses two layers:
+  # 1. PRIMARY: tools.core allowlist in settings.json (injected below) — only registers
+  #    read-only tools (ReadFileTool, GlobTool, GrepTool, LSTool). Unregistered tools
+  #    are excluded from tool declarations AND redacted from the system prompt, preventing
+  #    the model from even knowing they exist (see prompts.test.js, snippets.js).
+  # 2. DEFENSE-IN-DEPTH: --policy flag (user tier 4) denies remaining tools that
+  #    tools.core doesn't control (subagents, plan tools, etc.). The policy engine's
+  #    deny decision removes them from model memory.
   # Note: workspace policies (.gemini/policies/) are disabled in Gemini CLI
   # (disableWorkspacePolicies=true in policy.js), so --policy is the correct mechanism.
   GEMINI_POLICY_FILE="$TMPDIR_COUNCIL/council_deny.toml"
@@ -209,10 +213,13 @@ POLICY
   GEMINI_PROMPT_FILE="$TMPDIR_COUNCIL/gemini_prompt.txt"
   printf '%s' "$PROMPT" > "$GEMINI_PROMPT_FILE"
 
-  # Temporarily inject maxSessionTurns into user's Gemini settings to bound exploration.
-  # With codebase access, Gemini needs ~5-8 turns for reads + analysis; 10 gives headroom
-  # while preventing runaway loops. We modify the real settings so Gemini's auth works
-  # normally. Settings are restored via trap on EXIT/INT/TERM.
+  # Temporarily inject settings to bound exploration and restrict tools.
+  # - maxSessionTurns=10: Gemini needs ~5-8 turns for reads + analysis; 10 gives headroom
+  # - tools.core: allowlist of built-in tools to register (excludes ShellTool, WriteFileTool,
+  #   EditTool, etc.). Subagents (codebase_investigator, cli_help) are registered separately
+  #   and NOT controlled by tools.core — they remain available for read-only analysis.
+  # We modify the real settings so Gemini's auth works normally.
+  # Settings are restored via trap on EXIT/INT/TERM.
   GEMINI_SETTINGS="$HOME/.gemini/settings.json"
   GEMINI_SETTINGS_BACKUP=""
   if [[ -f "$GEMINI_SETTINGS" ]]; then
@@ -222,11 +229,12 @@ POLICY
 import json, sys
 s = json.load(open(sys.argv[1]))
 s.setdefault('model', {})['maxSessionTurns'] = 10
+s.setdefault('tools', {})['core'] = ['ReadFileTool', 'GlobTool', 'GrepTool', 'LSTool']
 json.dump(s, open(sys.argv[1], 'w'), indent=2)
 " "$GEMINI_SETTINGS"
   else
     mkdir -p "$HOME/.gemini"
-    printf '%s' '{"model":{"maxSessionTurns":10}}' > "$GEMINI_SETTINGS"
+    printf '%s' '{"model":{"maxSessionTurns":10},"tools":{"core":["ReadFileTool","GlobTool","GrepTool","LSTool"]}}' > "$GEMINI_SETTINGS"
     GEMINI_SETTINGS_BACKUP="__CREATED__"
   fi
 

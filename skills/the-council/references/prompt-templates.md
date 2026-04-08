@@ -11,7 +11,7 @@ Replace `{advisor_context_instruction}` with the appropriate line:
 > Project context: You have access to the full codebase via your tools. Reference specific files and line numbers.
 
 **Gemini** (has filesystem access via plan mode — read-only):
-> Project context: You have read-only access to the codebase via your tools (read_file, glob, grep_search, list_directory). Use them to explore relevant files. The diff/plan/question below is the primary input — use file access to verify details and trace dependencies.
+> Project context: You have read-only access to the codebase. Your available tools are: read_file, glob, grep_search, list_directory (plus codebase_investigator and cli_help subagents). No other tools are available — do not attempt run_shell_command or write tools. Use your read tools to explore relevant files. The diff/plan/question below is the primary input — use file access to verify details and trace dependencies.
 
 ## Code Review
 
