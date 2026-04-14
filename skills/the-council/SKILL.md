@@ -178,6 +178,7 @@ bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
 - `CODEX_MODEL` — default: auto (from `~/.codex/config.toml`)
 - `GEMINI_MODEL` — default: `auto` (CLI selects best available model)
 - `COUNCIL_TIMEOUT` — default: `300` (seconds)
+- `GEMINI_MAX_TURNS` — default: `50` (session turns; `COUNCIL_TIMEOUT` is the primary safety net)
 
 ### 3.5. Question Detection & Auto-Retry
 

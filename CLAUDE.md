@@ -44,6 +44,7 @@ All scripts use `set -euo pipefail`. Variables are quoted. Exit codes are meanin
 | `CODEX_MODEL` | auto (CLI default) | Codex advisor model |
 | `GEMINI_MODEL` | auto (CLI default) | Gemini advisor model |
 | `COUNCIL_TIMEOUT` | `300` | Max seconds per advisor |
+| `GEMINI_MAX_TURNS` | `50` | Max Gemini session turns |
 
 ## Temp Files
 

@@ -104,6 +104,7 @@ model_reasoning_effort = "xhigh"
 | `CODEX_MODEL` | auto (CLI default) | Model for Codex advisor |
 | `GEMINI_MODEL` | `gemini-3-pro-preview` | Model for Gemini advisor |
 | `COUNCIL_TIMEOUT` | `300` | Max seconds per advisor |
+| `GEMINI_MAX_TURNS` | `50` | Max Gemini session turns |
 
 ## Safety
 

@@ -15,7 +15,8 @@
 # Environment:
 #   CODEX_MODEL    — Override Codex model (default: auto, from ~/.codex/config.toml)
 #   GEMINI_MODEL   — Override Gemini model (default: auto, CLI selects)
-#   COUNCIL_TIMEOUT — Max seconds to wait per advisor (default: 300)
+#   COUNCIL_TIMEOUT  — Max seconds to wait per advisor (default: 300)
+#   GEMINI_MAX_TURNS — Max Gemini session turns (default: 50; COUNCIL_TIMEOUT is the primary safety net)
 
 set -euo pipefail
 
@@ -73,6 +74,7 @@ WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 CODEX_MODEL="${CODEX_MODEL:-}"
 GEMINI_MODEL="${GEMINI_MODEL:-}"
 TIMEOUT_SECS="${COUNCIL_TIMEOUT:-300}"
+GEMINI_MAX_TURNS="${GEMINI_MAX_TURNS:-50}"
 
 # Resolve display names for models (show user what's actually being used)
 if [[ -n "$CODEX_MODEL" ]]; then
@@ -148,6 +150,7 @@ echo "Invoking The Council ($MODE)..."
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model: $GEMINI_MODEL_DISPLAY"
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s (${TIMEOUT_CMD:-none})"
+[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini turns: ${GEMINI_MAX_TURNS} (GEMINI_MAX_TURNS)"
 echo ""
 
 # Helper: run a command with optional timeout
@@ -186,8 +189,8 @@ fi
 # Gemini runs from the PROJECT DIRECTORY with --approval-mode plan, giving it read
 # access to the codebase via built-in tools (read_file, glob, grep_search, etc.).
 # A --policy file (user tier 4) denies write/execute tools, removing them from the
-# model's memory entirely. maxSessionTurns=10 is temporarily injected into
-# ~/.gemini/settings.json to allow useful read exploration while bounding turns.
+# model's memory entirely. maxSessionTurns is temporarily injected into
+# ~/.gemini/settings.json (configurable via GEMINI_MAX_TURNS, default 50).
 if [[ "$RUN_GEMINI" == "true" ]]; then
   # Tool restriction uses two layers:
   # 1. PRIMARY: tools.core allowlist in settings.json (injected below) — only registers
@@ -214,7 +217,9 @@ POLICY
   printf '%s' "$PROMPT" > "$GEMINI_PROMPT_FILE"
 
   # Temporarily inject settings to bound exploration and restrict tools.
-  # - maxSessionTurns=10: Gemini needs ~5-8 turns for reads + analysis; 10 gives headroom
+  # - maxSessionTurns: configurable via GEMINI_MAX_TURNS (default 50). With read-only tool
+  #   access, Gemini may use 20-30+ turns on complex codebases for file reads + analysis.
+  #   COUNCIL_TIMEOUT (default 300s) is the primary safety net; turns are a secondary guard.
   # - tools.core: allowlist of built-in tools to register (excludes ShellTool, WriteFileTool,
   #   EditTool, etc.). Subagents (codebase_investigator, cli_help) are registered separately
   #   and NOT controlled by tools.core — they remain available for read-only analysis.
@@ -228,13 +233,13 @@ POLICY
     python3 -c "
 import json, sys
 s = json.load(open(sys.argv[1]))
-s.setdefault('model', {})['maxSessionTurns'] = 10
+s.setdefault('model', {})['maxSessionTurns'] = int(sys.argv[2])
 s.setdefault('tools', {})['core'] = ['ReadFileTool', 'GlobTool', 'GrepTool', 'LSTool']
 json.dump(s, open(sys.argv[1], 'w'), indent=2)
-" "$GEMINI_SETTINGS"
+" "$GEMINI_SETTINGS" "$GEMINI_MAX_TURNS"
   else
     mkdir -p "$HOME/.gemini"
-    printf '%s' '{"model":{"maxSessionTurns":10},"tools":{"core":["ReadFileTool","GlobTool","GrepTool","LSTool"]}}' > "$GEMINI_SETTINGS"
+    printf '{"model":{"maxSessionTurns":%d},"tools":{"core":["ReadFileTool","GlobTool","GrepTool","LSTool"]}}' "$GEMINI_MAX_TURNS" > "$GEMINI_SETTINGS"
     GEMINI_SETTINGS_BACKUP="__CREATED__"
   fi
 
