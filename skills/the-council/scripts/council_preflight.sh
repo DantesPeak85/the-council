@@ -48,12 +48,13 @@ if command -v codex &>/dev/null; then
   fi
 fi
 
-# --- Check Gemini CLI ---
-if command -v gemini &>/dev/null; then
+# --- Check Antigravity CLI (Gemini) ---
+if command -v agy &>/dev/null; then
   GEMINI_INSTALLED=true
-  # Check for Google credentials (OAuth or API key)
+  # Check for Google credentials (OAuth, API key, or CLI configuration)
   if [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]] \
-     || [[ -d "$HOME/.gemini" && -f "$HOME/.gemini/settings.json" ]]; then
+     || [[ -f "$HOME/.gemini/oauth_creds.json" ]] \
+     || [[ -f "$HOME/.gemini/antigravity-cli/settings.json" ]]; then
     GEMINI_AUTHENTICATED=true
   fi
 fi

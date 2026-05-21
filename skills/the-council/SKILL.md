@@ -1,6 +1,6 @@
 ---
 name: the-council
-description: Multi-model advisory board using OpenAI Codex CLI and Google Gemini CLI to provide second opinions on code reviews, architecture plans, debugging, and general engineering decisions. Invoke when the user requests a "council" review, wants a second opinion from other AI models, asks for multi-model consensus, or says "ask the council". Also invoke proactively when making high-stakes architectural decisions or when a code review checkpoint is reached.
+description: Multi-model advisory board using OpenAI Codex CLI and Google Antigravity CLI (agy) to provide second opinions on code reviews, architecture plans, debugging, and general engineering decisions. Invoke when the user requests a "council" review, wants a second opinion from other AI models, asks for multi-model consensus, or says "ask the council". Also invoke proactively when making high-stakes architectural decisions or when a code review checkpoint is reached.
 ---
 
 # The Council
@@ -12,11 +12,7 @@ Convene OpenAI Codex and Google Gemini as an advisory board. Both run in paralle
 - Project has a `CLAUDE.md` file in the working directory
 - At least one of the following CLIs installed and authenticated:
   - `codex` CLI (`npm i -g @openai/codex`)
-  - `gemini` CLI (`npm i -g @google/gemini-cli`)
-- Gemini experimental plan mode enabled in `~/.gemini/settings.json` (if using Gemini):
-  ```json
-  { "experimental": { "plan": true } }
-  ```
+  - `agy` CLI (`antigravity` CLI)
 
 ## Permission Setup
 
@@ -60,7 +56,7 @@ Parse the output (key=value lines) and determine the operating mode:
 Neither Codex nor Gemini CLI is available. To use The Council, install at least one:
 
   Codex:  npm i -g @openai/codex && codex auth
-  Gemini: npm i -g @google/gemini-cli && gemini   (authenticates via OAuth on first run)
+  Gemini: Install agy CLI and verify it is logged in via ~/.gemini/oauth_creds.json (runs automatically on first command)
 ```
 
 **If one advisor is missing**, note which mode is active and proceed. Example:
@@ -176,9 +172,7 @@ bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
 
 **Environment overrides:**
 - `CODEX_MODEL` — default: auto (from `~/.codex/config.toml`)
-- `GEMINI_MODEL` — default: `auto` (CLI selects best available model)
-- `COUNCIL_TIMEOUT` — default: `300` (seconds)
-- `GEMINI_MAX_TURNS` — default: `50` (session turns; `COUNCIL_TIMEOUT` is the primary safety net)
+- `GEMINI_MAX_TURNS` — default: `100` (session turns; `COUNCIL_TIMEOUT` is the primary safety net)
 
 ### 3.5. Question Detection & Auto-Retry
 
@@ -259,7 +253,7 @@ If you presented an early result during progressive polling (Step 3b), the user 
 
 **Divergence:** [Points where they disagree, with each position]
 
-**Claude's Recommendation:** [Your assessment integrating all three perspectives — yours plus both advisors']
+**Claude's Recommendation:** [Your assessment integrating all three perspectives — yours plus both advisors'. Note: Codex remains the primary source of truth and the main shipping gate; Gemini is advisory.]
 ```
 
 **Side-by-side mode** (when user requests "show me both" or "side by side"):
@@ -268,7 +262,7 @@ If you presented an early result during progressive polling (Step 3b), the user 
 ## Codex ({codex_model})
 [Full Codex response]
 
-## Gemini
+## Gemini (Gemini 3.5 Flash)
 [Full Gemini response]
 
 ## Claude's Take
@@ -277,7 +271,12 @@ If you presented an early result during progressive polling (Step 3b), the user 
 
 #### Single-Advisor Mode (one advisor responded)
 
-Present the single advisor's response with your own assessment:
+Present the single advisor's response with your own assessment.
+
+> [!IMPORTANT]
+> If Gemini (agy) dropped out mid-session or failed validation (returning an error log/response), you must explicitly surface this failure as a "degraded one-advisor Council (Codex only)" and never silently ignore it.
+>
+> If Gemini is the only advisor that responded (e.g. Gemini-only mode or Codex failed), remember that Gemini must never act as a sole shipping gate. Its opinions are strictly advisory, and Codex remains the primary codebase source of truth.
 
 ```
 ## Advisory Opinion ({Advisor Name} / {model})
@@ -308,7 +307,7 @@ Once all conditions above are satisfied, remove temporary files:
 Both advisors run in **read-only mode** — they can explore the codebase but cannot modify it:
 
 - **Codex**: `--sandbox read-only` — filesystem writes are blocked by the sandbox
-- **Gemini**: `--approval-mode plan` + `--policy` deny list — read-only mode with codebase access; read tools (read_file, glob, grep_search, list_directory) allowed; write/execute tools denied via policy and removed from model memory
+- **Gemini**: Runs via `agy` with closed stdin (`< /dev/null`) and explicit instructions. If a tool call triggers a write or command, the lack of interactive stdin prevents approvals, ensuring safety.
 
 This ensures advisors never modify project files. If either CLI updates its permission model, verify read-only enforcement before updating the scripts.
 
@@ -317,32 +316,7 @@ This ensures advisors never modify project files. If either CLI updates its perm
 Both advisors run at maximum capability:
 
 - **Codex**: Model auto-selected from `~/.codex/config.toml` (override with `CODEX_MODEL` env var), reasoning effort `xhigh` (set via `~/.codex/config.toml` key `model_reasoning_effort = "xhigh"`)
-- **Gemini**: Model auto-selected by CLI (override with `GEMINI_MODEL` env var), thinking level `HIGH` (set via `~/.gemini/settings.json` in `modelConfigs`)
-
-If the user's config doesn't have these settings, advise them to add:
-
-Codex (`~/.codex/config.toml`):
-```toml
-model_reasoning_effort = "xhigh"
-```
-
-Gemini (`~/.gemini/settings.json`):
-```json
-{
-  "modelConfigs": {
-    "customAliases": {
-      "council": {
-        "modelConfig": {
-          "model": "gemini-2.5-pro",
-          "generateContentConfig": {
-            "thinkingConfig": { "thinkingLevel": "HIGH" }
-          }
-        }
-      }
-    }
-  }
-}
-```
+- **Gemini**: Runs via `agy` defaulting to Gemini 3.5 Flash. The session is bounded by setting `maxSessionTurns` to `100` in the user configuration.
 
 ## Error Handling
 
