@@ -17,6 +17,9 @@
 #   GEMINI_MODEL   — Override Gemini model (unused with agy CLI)
 #   COUNCIL_TIMEOUT  — Max seconds to wait per advisor (default: 300)
 #   GEMINI_MAX_TURNS — Max Gemini session turns (default: 100; COUNCIL_TIMEOUT is the primary safety net)
+#   AGY_PRINT_TIMEOUT — Override agy --print-timeout (default: 8m)
+#                      agy's own 5m default can race with COUNCIL_TIMEOUT; 8m
+#                      gives COUNCIL_TIMEOUT room to be the outer bound.
 
 set -euo pipefail
 
@@ -75,6 +78,7 @@ CODEX_MODEL="${CODEX_MODEL:-}"
 GEMINI_MODEL="${GEMINI_MODEL:-}"
 TIMEOUT_SECS="${COUNCIL_TIMEOUT:-300}"
 GEMINI_MAX_TURNS="${GEMINI_MAX_TURNS:-100}"
+AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-8m}"
 
 # Resolve display names for models (show user what's actually being used)
 if [[ -n "$CODEX_MODEL" ]]; then
@@ -151,6 +155,7 @@ echo "Invoking The Council ($MODE)..."
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s (${TIMEOUT_CMD:-none})"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini turns: ${GEMINI_MAX_TURNS} (GEMINI_MAX_TURNS)"
+[[ "$RUN_GEMINI" == "true" ]] && echo "  Agy timeout:  ${AGY_PRINT_TIMEOUT} (AGY_PRINT_TIMEOUT)"
 echo ""
 
 # Helper: run a command with optional timeout
@@ -234,6 +239,7 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
     # stdin reaches EOF after the prompt is consumed, so combined with
     # --dangerously-skip-permissions, agy still cannot prompt for tool approvals.
     run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
+      --print-timeout "$AGY_PRINT_TIMEOUT" \
       < "$GEMINI_PROMPT_FILE" \
       > "$GEMINI_OUT" \
       2>"$GEMINI_ERR" || {
@@ -247,6 +253,7 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
     if [[ ! -s "$GEMINI_OUT" && ! -s "$GEMINI_ERR" ]]; then
       echo "Gemini (agy) returned empty response with no errors — retrying once..." >&2
       run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
+        --print-timeout "$AGY_PRINT_TIMEOUT" \
         < "$GEMINI_PROMPT_FILE" \
         > "$GEMINI_OUT" \
         2>"$GEMINI_ERR" || {
