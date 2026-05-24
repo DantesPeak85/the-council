@@ -173,6 +173,7 @@ bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
 **Environment overrides:**
 - `CODEX_MODEL` — default: auto (from `~/.codex/config.toml`)
 - `GEMINI_MAX_TURNS` — default: `100` (session turns; `COUNCIL_TIMEOUT` is the primary safety net)
+- `AGY_PRINT_TIMEOUT` — default: `8m` (override agy `--print-timeout`; agy's 5m default can race with `COUNCIL_TIMEOUT`; 8m keeps `COUNCIL_TIMEOUT` as the outer bound)
 
 ### 3.5. Question Detection & Auto-Retry
 
@@ -307,7 +308,7 @@ Once all conditions above are satisfied, remove temporary files:
 Both advisors run in **read-only mode** — they can explore the codebase but cannot modify it:
 
 - **Codex**: `--sandbox read-only` — filesystem writes are blocked by the sandbox
-- **Gemini**: Runs via `agy` with closed stdin (`< /dev/null`) and explicit instructions. If a tool call triggers a write or command, the lack of interactive stdin prevents approvals, ensuring safety.
+- **Gemini**: Runs via `agy` with `--print --dangerously-skip-permissions` and the prompt piped via stdin from `$GEMINI_PROMPT_FILE` — stdin reaches EOF after the prompt is consumed, and `--dangerously-skip-permissions` together mean agy cannot prompt for tool approvals (write/exec tools fail closed). Note: both the stdin-EOF behavior AND `--dangerously-skip-permissions` are required — removing either alone could allow interactive approvals.
 
 This ensures advisors never modify project files. If either CLI updates its permission model, verify read-only enforcement before updating the scripts.
 

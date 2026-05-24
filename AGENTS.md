@@ -1,3 +1,11 @@
+# Advisory Context (synced from CLAUDE.md)
+
+You are being consulted as an external advisor on this project.
+Review the project context below and provide your expert analysis when prompted.
+Focus on correctness, potential issues, and alternative approaches.
+
+---
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
