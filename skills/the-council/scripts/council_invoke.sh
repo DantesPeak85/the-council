@@ -289,6 +289,10 @@ GEMINI_FAIL_REASON=""
 GEMINI_FAILURE_PATTERNS="unproductive state|Path not in workspace|exceeded maximum number of turns|RESOURCE_EXHAUSTED|rate limit|Maximum session turns exceeded|Loop detected, stopping execution|Agent execution blocked|Agent execution stopped|No input provided via stdin|Argument list too long|E2BIG|429|quota|safety|policy|blocked"
 CODEX_FAILURE_PATTERNS="rate limit|context length|unauthorized|Argument list too long|E2BIG"
 
+# Phrases agy emits when it didn't engage with the prompt (scratch-workspace
+# meta-chatter, "ready to help" boilerplate, asking for the prompt back, etc.)
+GEMINI_NON_ENGAGEMENT_PATTERNS="I am ready to help|scratch workspace directory|default workspace directory set to|please let me know what you would like to build|provide the path|/goal slash command|specified in the chat|empty except for a \`test_write.txt\`"
+
 # Check Codex response
 if [[ "$RUN_CODEX" == "true" && "$CODEX_STATUS" -eq 0 ]]; then
   if [[ ! -s "$CODEX_OUT" ]]; then
@@ -334,6 +338,24 @@ if [[ "$RUN_GEMINI" == "true" && "$GEMINI_STATUS" -eq 0 ]]; then
     MATCHED_PATTERN="$(grep -Eio "$GEMINI_FAILURE_PATTERNS" "$GEMINI_OUT" | head -1)" || true
     if [[ -n "$MATCHED_PATTERN" ]]; then
       GEMINI_FAIL_REASON="${GEMINI_FAIL_REASON:+${GEMINI_FAIL_REASON}; }response: $MATCHED_PATTERN"
+    fi
+  fi
+
+  # Non-engagement heuristic: on prompts > 2KB, agy should produce a substantive
+  # response. If exit 0 + non-empty $GEMINI_OUT but (very short OR matches a
+  # non-engagement phrase), treat as silent failure (see 2026-05-24 bug report).
+  if [[ -z "$GEMINI_FAIL_REASON" && -s "$GEMINI_OUT" ]]; then
+    PROMPT_SIZE=$(wc -c < "$GEMINI_PROMPT_FILE" 2>/dev/null || echo 0)
+    RESPONSE_SIZE=$(wc -c < "$GEMINI_OUT" 2>/dev/null || echo 0)
+    if [[ "$PROMPT_SIZE" -gt 2048 ]]; then
+      if [[ "$RESPONSE_SIZE" -lt 200 ]]; then
+        GEMINI_FAIL_REASON="non-engagement: ${RESPONSE_SIZE}-char response on ${PROMPT_SIZE}-byte prompt"
+      else
+        META_MATCH="$(grep -Eio "$GEMINI_NON_ENGAGEMENT_PATTERNS" "$GEMINI_OUT" | head -1)" || true
+        if [[ -n "$META_MATCH" ]]; then
+          GEMINI_FAIL_REASON="non-engagement: $META_MATCH"
+        fi
+      fi
     fi
   fi
 

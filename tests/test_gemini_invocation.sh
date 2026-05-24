@@ -90,3 +90,19 @@ echo "$RESPONSE" | grep -qi "default workspace directory set to" \
   || fail "Response shorter than 200 chars on a >2KB prompt"
 
 echo "PASS: Gemini engaged with project files"
+
+# --- Detection test: meta-chatter response must be flagged ---
+echo ""
+echo "=== Detection test: meta-chatter must trigger validation failure ==="
+
+FAKE_BIN="$TMPDIR_TEST/fake-bin"
+mkdir -p "$FAKE_BIN"
+ln -sf "$REPO_ROOT/tests/fixtures/fake-agy-metachat.sh" "$FAKE_BIN/agy"
+
+# Run with the fake agy on PATH; capture stderr where validation messages land.
+DETECT_OUT="$(PATH="$FAKE_BIN:$PATH" bash "$COUNCIL_SCRIPT" --gemini-only "$PROMPT" "$PROJECT" 2>&1 || true)"
+
+echo "$DETECT_OUT" | grep -qi "non-engagement" \
+  || { echo "FAIL: validation did not flag meta-chatter response"; echo "$DETECT_OUT"; exit 1; }
+
+echo "PASS: meta-chatter response correctly flagged"
