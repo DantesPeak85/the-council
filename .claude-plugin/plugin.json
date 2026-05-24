@@ -1,7 +1,7 @@
 {
   "name": "the-council",
   "description": "Multi-model advisory board — get second opinions from Codex and Gemini",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": {
     "name": "Tom Wolinitz"
   },
