@@ -230,7 +230,11 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
 
   (
     cd "$WORK_DIR" || exit 1
-    run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions "$GEMINI_PROMPT" < /dev/null \
+    # Pipe prompt via stdin: long argv prompts (>2KB) cause agy non-engagement.
+    # stdin reaches EOF after the prompt is consumed, so combined with
+    # --dangerously-skip-permissions, agy still cannot prompt for tool approvals.
+    run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
+      < "$GEMINI_PROMPT_FILE" \
       > "$GEMINI_OUT" \
       2>"$GEMINI_ERR" || {
         STATUS=$?
@@ -242,7 +246,8 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
     # Auto-retry once on transient empty response (exit 0, no stdout, no stderr).
     if [[ ! -s "$GEMINI_OUT" && ! -s "$GEMINI_ERR" ]]; then
       echo "Gemini (agy) returned empty response with no errors — retrying once..." >&2
-      run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions "$GEMINI_PROMPT" < /dev/null \
+      run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
+        < "$GEMINI_PROMPT_FILE" \
         > "$GEMINI_OUT" \
         2>"$GEMINI_ERR" || {
           STATUS=$?
