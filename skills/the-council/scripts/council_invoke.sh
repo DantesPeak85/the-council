@@ -230,7 +230,7 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
 
   (
     cd "$WORK_DIR" || exit 1
-    run_with_timeout agy --print --dangerously-skip-permissions "$GEMINI_PROMPT" < /dev/null \
+    run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions "$GEMINI_PROMPT" < /dev/null \
       > "$GEMINI_OUT" \
       2>"$GEMINI_ERR" || {
         STATUS=$?
@@ -242,7 +242,7 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
     # Auto-retry once on transient empty response (exit 0, no stdout, no stderr).
     if [[ ! -s "$GEMINI_OUT" && ! -s "$GEMINI_ERR" ]]; then
       echo "Gemini (agy) returned empty response with no errors — retrying once..." >&2
-      run_with_timeout agy --print --dangerously-skip-permissions "$GEMINI_PROMPT" < /dev/null \
+      run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions "$GEMINI_PROMPT" < /dev/null \
         > "$GEMINI_OUT" \
         2>"$GEMINI_ERR" || {
           STATUS=$?
