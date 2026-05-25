@@ -38,12 +38,12 @@ run_council() {
   set +e
   if [[ -n "$fake_target" ]]; then
     FAKE_AGY_GHOST_TARGET="$fake_target" PATH="$fake_bin:$PATH" \
-      bash "$COUNCIL_SCRIPT" --gemini-only "$prompt" "$project" \
+      bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$prompt" "$project" \
       > "$TMPDIR_TEST/stdout.log" 2> "$stderr_log"
   else
     # No ghost write: point target to a no-op (overwrites a file we'll clean up)
     FAKE_AGY_GHOST_TARGET="/tmp/fake-agy-noop-$$.txt" PATH="$fake_bin:$PATH" \
-      bash "$COUNCIL_SCRIPT" --gemini-only "$prompt" "$project" \
+      bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$prompt" "$project" \
       > "$TMPDIR_TEST/stdout.log" 2> "$stderr_log"
     rm -f "/tmp/fake-agy-noop-$$.txt"
   fi
