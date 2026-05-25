@@ -221,13 +221,29 @@ else
   MODE="Gemini-only"
 fi
 
+# Capture CLI versions for the banner (1.3.0+: forensic continuity per
+# Council R1). Lightweight — these are direct CLI calls, not preflight cache.
+CODEX_VERSION_DISPLAY=""
+AGY_VERSION_DISPLAY=""
+[[ "$RUN_CODEX" == "true" ]] && CODEX_VERSION_DISPLAY="$(codex --version 2>/dev/null | head -1 | tr -d '\r' || true)"
+[[ "$RUN_GEMINI" == "true" ]] && AGY_VERSION_DISPLAY="$(agy --version 2>/dev/null | head -1 | tr -d '\r' || true)"
+
 echo "Invoking The Council ($MODE)..."
 [[ "$RUN_CODEX" == "true" ]] && echo "  Codex model:  $CODEX_MODEL_DISPLAY"
+[[ "$RUN_CODEX" == "true" ]] && echo "  Codex CLI:    ${CODEX_VERSION_DISPLAY:-unknown}"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model: $GEMINI_MODEL_DISPLAY"
+[[ "$RUN_GEMINI" == "true" ]] && echo "  agy CLI:      ${AGY_VERSION_DISPLAY:-unknown}"
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s (${TIMEOUT_CMD:-none})"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini turns: ${GEMINI_MAX_TURNS} (GEMINI_MAX_TURNS)"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Agy timeout:  ${AGY_PRINT_TIMEOUT} (AGY_PRINT_TIMEOUT)"
+if [[ "$RUN_GEMINI" == "true" ]]; then
+  if command -v sandbox-exec &>/dev/null && [[ -f "$SANDBOX_PROFILE" ]] && [[ "$ALLOW_UNSANDBOXED_GEMINI" != "true" ]]; then
+    echo "  agy isolation: sandbox-exec (OS-level deny-write)"
+  elif [[ "$ALLOW_UNSANDBOXED_GEMINI" == "true" ]]; then
+    echo "  agy isolation: UNSANDBOXED (--allow-unsandboxed-gemini); diff check is the only protection"
+  fi
+fi
 echo ""
 
 # Helper: run a command with optional timeout

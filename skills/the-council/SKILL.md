@@ -95,7 +95,7 @@ Select the appropriate template from [references/prompt-templates.md](references
 
 Write the composed prompt to a temporary file. Include all relevant context inline (diffs, error messages, plan text) — the advisors cannot read Claude's conversation history.
 
-**Context in prompts:** Both advisors now have filesystem access — Codex via read-only sandbox, Gemini via plan mode with read tools. However, task-specific context (diffs, error messages, plan text, conversation history) must still be inlined because advisors cannot access Claude's conversation or external paths like `~/.claude/plans/`.
+**Context in prompts:** Both advisors have read-only filesystem access to the working directory (Codex via its native `--sandbox read-only`; Gemini via `agy` wrapped in `sandbox-exec` on macOS — see Permissions and Safety). However, task-specific context (diffs, error messages, plan text, conversation history) must still be inlined because advisors cannot access Claude's conversation or external paths like `~/.claude/plans/`.
 
 - **Always inline:** diffs, error output, plan text, conversation excerpts, and any content from outside the project directory
 - **Can reference by path:** codebase files that advisors can read directly (e.g., "see `src/config.ts` for the current implementation")
@@ -305,12 +305,25 @@ Once all conditions above are satisfied, remove temporary files:
 
 ## Permissions and Safety
 
-Both advisors run in **read-only mode** — they can explore the codebase but cannot modify it:
+Both advisors run with **OS-enforced read-only sandboxes** on macOS. Neither can write to your project directory; tool calls that try to write fail at the OS layer.
 
-- **Codex**: `--sandbox read-only` — filesystem writes are blocked by the sandbox
-- **Gemini**: Runs via `agy` with `--print --dangerously-skip-permissions` and the prompt piped via stdin from `$GEMINI_PROMPT_FILE` — stdin reaches EOF after the prompt is consumed, and `--dangerously-skip-permissions` together mean agy cannot prompt for tool approvals (write/exec tools fail closed). Note: both the stdin-EOF behavior AND `--dangerously-skip-permissions` are required — removing either alone could allow interactive approvals.
+- **Codex**: `--sandbox read-only` — Codex's built-in OS-level filesystem deny-write.
+- **Gemini (`agy`)** on **macOS**: wrapped in `sandbox-exec` using a deny-write profile at `scripts/council_sandbox.sb`. The profile allows reads everywhere; allows writes only to `~/.gemini/`, the per-invocation `.council-tmp/<...>/` dir, system temp (`/tmp`, `/private/tmp`, `/private/var/folders`), and the agy-specific subdirs under `~/Library/Caches/` (`agy/`, `Google/`). All other writes (including the project tree) are blocked at the OS layer.
+- **Gemini (`agy`)** on **non-macOS**: `sandbox-exec` is unavailable. The script REFUSES to run agy unless the caller passes `--allow-unsandboxed-gemini`, in which case agy runs unsandboxed with a loud warning — the diff safety net below is the only protection in that mode. Or use `--codex-only` to skip Gemini entirely.
 
-This ensures advisors never modify project files. If either CLI updates its permission model, verify read-only enforcement before updating the scripts.
+### Diff safety net (defense in depth — runs on all platforms)
+
+Before launching either advisor, the script snapshots `$WORK_DIR` (git: HEAD + status `--ignored=traditional` + sha256 of tracked + untracked + gitignored files; non-git: `find` + sha256). After both advisors return, the snapshot is repeated and diffed. The snapshot excludes `.council-tmp/` (the script's own response files) and `.antigravitycli/` (agy's per-workspace session-metadata directory, created via Apple APIs that bypass `sandbox-exec` and known not to be a security concern).
+
+**Any unauthorized change to the working tree causes the invocation to fail closed with exit code 2 and a `[COUNCIL_SAFETY_NET]` error banner pointing at the diff.** This catches any escape from the sandbox — including writes to gitignored files like `.env`, `dist/`, or `node_modules/`, which the previous `--exclude-standard` snapshot logic would have missed (Council R1 fix, 2026-05-25).
+
+### Historical note (1.2.x ghost-write incident)
+
+Versions 1.2.0 and 1.2.1 documented agy's read-only property as "stdin-EOF + `--dangerously-skip-permissions` together prevent tool approvals." That reasoning was **wrong**: `agy --help` says `--dangerously-skip-permissions` is `"Auto-approve all tool permission requests without prompting"` — it grants permission, not withholds it. A 2026-05-24 incident saw agy ghost-write 8 files inside `$WORK_DIR` during what was supposed to be an advisory Council R1. **Upgrade to 1.3.0 or later** to get the OS-level sandbox enforcement above.
+
+### When you see `[COUNCIL_SAFETY_NET]` fire
+
+Either (a) an advisor sandbox escape (rare — investigate as a real security issue), or (b) genuine concurrent work in `$WORK_DIR` by you or another process during the invocation window. Inspect the diff file the banner points at; you'll get response files and a clean before/after snapshot regardless. Do not trust the advisor recommendations until you've audited the diff.
 
 ## Model and Effort Configuration
 

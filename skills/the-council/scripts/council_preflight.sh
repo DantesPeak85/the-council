@@ -36,12 +36,15 @@ fi
 
 CODEX_INSTALLED=false
 CODEX_AUTHENTICATED=false
+CODEX_VERSION=""
 GEMINI_INSTALLED=false
 GEMINI_AUTHENTICATED=false
+AGY_VERSION=""
 
 # --- Check Codex CLI ---
 if command -v codex &>/dev/null; then
   CODEX_INSTALLED=true
+  CODEX_VERSION="$(codex --version 2>/dev/null | head -1 | tr -d '\r' || true)"
   # Check for OpenAI API key in env or config
   if [[ -n "${OPENAI_API_KEY:-}" ]] || [[ -f "$HOME/.codex/config.toml" ]]; then
     CODEX_AUTHENTICATED=true
@@ -51,6 +54,7 @@ fi
 # --- Check Antigravity CLI (Gemini) ---
 if command -v agy &>/dev/null; then
   GEMINI_INSTALLED=true
+  AGY_VERSION="$(agy --version 2>/dev/null | head -1 | tr -d '\r' || true)"
   # Check for Google credentials (OAuth, API key, or CLI configuration)
   if [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]] \
      || [[ -f "$HOME/.gemini/oauth_creds.json" ]] \
@@ -59,11 +63,13 @@ if command -v agy &>/dev/null; then
   fi
 fi
 
-# Build result
+# Build result (1.3.0+: includes CLI versions for forensic continuity)
 RESULT="CODEX_INSTALLED=$CODEX_INSTALLED
 CODEX_AUTHENTICATED=$CODEX_AUTHENTICATED
+CODEX_VERSION=$CODEX_VERSION
 GEMINI_INSTALLED=$GEMINI_INSTALLED
-GEMINI_AUTHENTICATED=$GEMINI_AUTHENTICATED"
+GEMINI_AUTHENTICATED=$GEMINI_AUTHENTICATED
+AGY_VERSION=$AGY_VERSION"
 
 # Cache and output
 echo "$RESULT" > "$CACHE_FILE"
