@@ -23,10 +23,16 @@
 
 set -euo pipefail
 
+# Locate this script's directory for finding co-located resources
+# (e.g., council_sandbox.sb).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SANDBOX_PROFILE="$SCRIPT_DIR/council_sandbox.sb"
+
 # --- Parse flags ---
 RUN_CODEX=true
 RUN_GEMINI=true
 CONTEXT_FILE=""
+ALLOW_UNSANDBOXED_GEMINI=false
 
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
@@ -41,6 +47,13 @@ while [[ "${1:-}" == --* ]]; do
     --context-file)
       CONTEXT_FILE="${2:?--context-file requires a path argument}"
       shift 2
+      ;;
+    --allow-unsandboxed-gemini)
+      # Council R1: on non-macOS (no sandbox-exec), refuse to run agy unless
+      # the caller explicitly accepts the risk via this flag. The Phase A
+      # diff safety net is still the backstop in that mode.
+      ALLOW_UNSANDBOXED_GEMINI=true
+      shift
       ;;
     *)
       echo "ERROR: Unknown flag: $1" >&2
@@ -74,15 +87,24 @@ fi
 snapshot_worktree() {
   local dir="$1"
   local out_file="$2"
+  # Paths excluded from change-detection:
+  #   .council-tmp/      — our own per-invocation response files
+  #   .antigravitycli/   — agy's per-workspace session-metadata dir; agy
+  #                        creates it in any --add-dir target regardless of
+  #                        sandbox profile (uses Apple APIs that bypass
+  #                        sandbox-exec file-write-create checks). Not a
+  #                        security concern — just housekeeping JSON.
   if git -C "$dir" rev-parse --is-inside-work-tree &>/dev/null; then
     {
       echo "MODE=git"
       git -C "$dir" rev-parse HEAD 2>/dev/null || echo "HEAD=none"
       git -C "$dir" status --porcelain=v1 --untracked-files=all --ignored=traditional \
-        -- ':(exclude).council-tmp/**'
-      # Hash tracked + ALL untracked (including gitignored), minus .council-tmp/.
-      # Omitting --exclude-standard so --others includes gitignored entries.
-      git -C "$dir" ls-files --cached --others -z -- ':(exclude).council-tmp/**' \
+        -- ':(exclude).council-tmp/**' ':(exclude).antigravitycli/**'
+      # Hash tracked + ALL untracked (including gitignored), minus the
+      # excluded paths. Omitting --exclude-standard so --others includes
+      # gitignored entries.
+      git -C "$dir" ls-files --cached --others -z \
+        -- ':(exclude).council-tmp/**' ':(exclude).antigravitycli/**' \
         | xargs -0 -I {} sh -c "cd '$dir' && sha256sum -- '{}' 2>/dev/null" \
         | LC_ALL=C sort
     } > "$out_file"
@@ -91,6 +113,7 @@ snapshot_worktree() {
       echo "MODE=find"
       find "$dir" -type f \
         -not -path '*/.council-tmp/*' \
+        -not -path '*/.antigravitycli/*' \
         -not -path '*/.git/*' \
         -exec sha256sum -- {} \; 2>/dev/null \
         | LC_ALL=C sort
@@ -216,6 +239,54 @@ run_with_timeout() {
   fi
 }
 
+# Helper: run agy under a deny-write sandbox profile (macOS sandbox-exec).
+# Mirrors Codex's OS-level read-only model. Falls back to unsandboxed only
+# when --allow-unsandboxed-gemini was passed (Council R1: don't silently
+# run unsandboxed on non-macOS).
+#
+# Council R1: all -D parameters are asserted non-empty here; an empty
+# value would cause sandbox-exec to fail with a confusing parse error.
+run_agy_sandboxed() {
+  # --allow-unsandboxed-gemini forces unsandboxed even on macOS (useful for
+  # exercising the diff safety net in isolation, or for environments where
+  # the sandbox profile would need further tuning).
+  if [[ "$ALLOW_UNSANDBOXED_GEMINI" == "true" ]]; then
+    echo "WARNING: agy running UNSANDBOXED per --allow-unsandboxed-gemini." >&2
+    echo "         Phase A diff safety net is the only protection against ghost-writes." >&2
+    run_with_timeout agy "$@"
+    return $?
+  fi
+  if command -v sandbox-exec &>/dev/null && [[ -f "$SANDBOX_PROFILE" ]]; then
+    local home_gemini="$HOME/.gemini"
+    local home_caches="$HOME/Library/Caches"
+    local sys_tmp="/tmp"
+    local sys_private_tmp="/private/tmp"
+    local sys_var_folders="/private/var/folders"
+    # Assert all sandbox -D params are non-empty.
+    for var in home_gemini TMPDIR_COUNCIL home_caches sys_tmp sys_private_tmp sys_var_folders; do
+      if [[ -z "${!var:-}" ]]; then
+        echo "ERROR: sandbox-exec parameter '$var' is empty; refusing to invoke agy unsandboxed." >&2
+        return 1
+      fi
+    done
+    run_with_timeout sandbox-exec -f "$SANDBOX_PROFILE" \
+      -D HOME_GEMINI="$home_gemini" \
+      -D TMPDIR_COUNCIL="$TMPDIR_COUNCIL" \
+      -D HOME_LIBRARY_CACHES="$home_caches" \
+      -D SYS_TMP="$sys_tmp" \
+      -D SYS_PRIVATE_TMP="$sys_private_tmp" \
+      -D SYS_VAR_FOLDERS="$sys_var_folders" \
+      agy "$@"
+  else
+    echo "ERROR: sandbox-exec not found (non-macOS or missing profile)." >&2
+    echo "       agy 1.0.2 has no native read-only mode; running unsandboxed risks" >&2
+    echo "       the 2026-05-24 ghost-write incident pattern." >&2
+    echo "       Pass --allow-unsandboxed-gemini to override (relies on Phase A diff check only)," >&2
+    echo "       or use --codex-only to skip the Gemini advisor entirely." >&2
+    return 1
+  fi
+}
+
 CODEX_PID=""
 GEMINI_PID=""
 
@@ -284,10 +355,13 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
 
   (
     cd "$WORK_DIR" || exit 1
-    # Pipe prompt via stdin: long argv prompts (>2KB) cause agy non-engagement.
-    # stdin reaches EOF after the prompt is consumed, so combined with
-    # --dangerously-skip-permissions, agy still cannot prompt for tool approvals.
-    run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
+    # Pipe prompt via stdin and wrap agy in an OS-level deny-write sandbox.
+    # The previous belief that --print + --dangerously-skip-permissions made
+    # agy read-only was wrong (--dangerously-skip-permissions is auto-approve);
+    # the 2026-05-24 incident proved it. Now agy is wrapped in sandbox-exec
+    # (council_sandbox.sb) so write attempts inside $WORK_DIR fail at the OS
+    # layer, mirroring Codex's --sandbox read-only.
+    run_agy_sandboxed --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
       --print-timeout "$AGY_PRINT_TIMEOUT" \
       < "$GEMINI_PROMPT_FILE" \
       > "$GEMINI_OUT" \
@@ -301,7 +375,7 @@ json.dump(s, open(sys.argv[1], 'w'), indent=2)
     # Auto-retry once on transient empty response (exit 0, no stdout, no stderr).
     if [[ ! -s "$GEMINI_OUT" && ! -s "$GEMINI_ERR" ]]; then
       echo "Gemini (agy) returned empty response with no errors — retrying once..." >&2
-      run_with_timeout agy --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
+      run_agy_sandboxed --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
         --print-timeout "$AGY_PRINT_TIMEOUT" \
         < "$GEMINI_PROMPT_FILE" \
         > "$GEMINI_OUT" \

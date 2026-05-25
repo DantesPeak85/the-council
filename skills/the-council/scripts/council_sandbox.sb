@@ -1,0 +1,58 @@
+;; council_sandbox.sb — deny-write sandbox for agy advisor invocation (1.3.0+).
+;;
+;; Mirrors Codex's --sandbox read-only at the OS level. agy 1.0.2 has no
+;; native filesystem read-only flag (verified: --dangerously-skip-permissions
+;; is auto-approve, not withhold-approval; --print is non-interactive output
+;; only; --sandbox is terminal restrictions, not filesystem). This profile
+;; provides the missing layer.
+;;
+;; Council R1 narrowing (2026-05-25): writes are scoped tightly to the
+;; specific subpaths agy needs. $HOME/Library/Caches is NOT allowed wholesale;
+;; only the agy and Google subdirs.
+;;
+;; Reads: allow everything (advisors need broad codebase read access for
+;; reviews). Writes: deny everywhere except the explicitly allowed dirs below.
+;;
+;; Parameters (passed via -D to sandbox-exec):
+;;   HOME_GEMINI            — usually $HOME/.gemini (agy's settings/scratch dir)
+;;   TMPDIR_COUNCIL         — current invocation's .council-tmp/ subdir
+;;   HOME_LIBRARY_CACHES    — usually $HOME/Library/Caches (parent only;
+;;                            the allow rules below scope to subpaths)
+;;   SYS_TMP                — usually /tmp
+;;   SYS_PRIVATE_TMP        — usually /private/tmp
+;;   SYS_VAR_FOLDERS        — usually /private/var/folders (macOS $TMPDIR root)
+
+(version 1)
+(deny default)
+
+;; Reads: allow everything. Advisors need broad codebase read access.
+(allow file-read*)
+
+;; Writes: default deny, narrow allowlist.
+(deny file-write*)
+(allow file-write* (subpath (param "HOME_GEMINI")))
+(allow file-write* (subpath (param "TMPDIR_COUNCIL")))
+(allow file-write* (subpath (param "SYS_TMP")))
+(allow file-write* (subpath (param "SYS_PRIVATE_TMP")))
+(allow file-write* (subpath (param "SYS_VAR_FOLDERS")))
+;; Narrowed Library/Caches access (Council R1 — not the whole cache root).
+(allow file-write*
+  (regex (string-append "^" (param "HOME_LIBRARY_CACHES") "/agy(/|$)")))
+(allow file-write*
+  (regex (string-append "^" (param "HOME_LIBRARY_CACHES") "/Google(/|$)")))
+(allow file-write*
+  (regex (string-append "^" (param "HOME_LIBRARY_CACHES") "/com\\.google\\.")))
+
+;; Process / network / IPC: allow. agy spawns helpers, does TLS, talks to
+;; its daemon. Child processes inherit this sandbox transitively per
+;; Apple's sandbox model (confirmed in Council R1), so broad process-exec
+;; here does NOT defeat the write deny.
+(allow process-exec*)
+(allow process-fork)
+(allow network*)
+(allow mach-lookup)
+(allow ipc*)
+(allow signal (target self))
+(allow signal (target children))
+(allow sysctl-read)
+(allow iokit-open)
