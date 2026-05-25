@@ -59,6 +59,51 @@ else
   TIMEOUT_CMD=""
 fi
 
+# --- Worktree snapshot helpers (Phase A safety net, 1.3.0+) ---
+# Captures a stable fingerprint of $WORK_DIR so we can detect unauthorized
+# writes by an advisor. Uses git if available (covers tracked + untracked
+# + gitignored, minus .council-tmp/), falls back to find+sha256 for
+# non-git directories.
+#
+# Council R1 revisions integrated:
+#   - .council-tmp/ excluded via pathspec (NOT --exclude-standard, which
+#     doesn't actually exclude it).
+#   - Gitignored files INCLUDED in snapshot (closes the .env / dist/ /
+#     node_modules/ blind spot — agy writes to those must trip the diff).
+
+snapshot_worktree() {
+  local dir="$1"
+  local out_file="$2"
+  if git -C "$dir" rev-parse --is-inside-work-tree &>/dev/null; then
+    {
+      echo "MODE=git"
+      git -C "$dir" rev-parse HEAD 2>/dev/null || echo "HEAD=none"
+      git -C "$dir" status --porcelain=v1 --untracked-files=all --ignored=traditional \
+        -- ':(exclude).council-tmp/**'
+      # Hash tracked + ALL untracked (including gitignored), minus .council-tmp/.
+      # Omitting --exclude-standard so --others includes gitignored entries.
+      git -C "$dir" ls-files --cached --others -z -- ':(exclude).council-tmp/**' \
+        | xargs -0 -I {} sh -c "cd '$dir' && sha256sum -- '{}' 2>/dev/null" \
+        | LC_ALL=C sort
+    } > "$out_file"
+  else
+    {
+      echo "MODE=find"
+      find "$dir" -type f \
+        -not -path '*/.council-tmp/*' \
+        -not -path '*/.git/*' \
+        -exec sha256sum -- {} \; 2>/dev/null \
+        | LC_ALL=C sort
+    } > "$out_file"
+  fi
+}
+
+diff_worktree() {
+  local before="$1"
+  local after="$2"
+  diff "$before" "$after"
+}
+
 # --- Load nvm/node environment if needed (CLIs installed via npm) ---
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 if [[ -s "$NVM_DIR/nvm.sh" ]]; then
@@ -139,6 +184,10 @@ CODEX_OUT="$TMPDIR_COUNCIL/codex_response.md"
 GEMINI_OUT="$TMPDIR_COUNCIL/gemini_response.md"
 CODEX_ERR="$TMPDIR_COUNCIL/codex_error.log"
 GEMINI_ERR="$TMPDIR_COUNCIL/gemini_error.log"
+
+# --- Phase A safety net: snapshot $WORK_DIR BEFORE invocation ---
+WORKTREE_SNAPSHOT_BEFORE="$TMPDIR_COUNCIL/worktree_snapshot_before.txt"
+snapshot_worktree "$WORK_DIR" "$WORKTREE_SNAPSHOT_BEFORE"
 
 # Determine mode label
 if [[ "$RUN_CODEX" == "true" && "$RUN_GEMINI" == "true" ]]; then
@@ -369,6 +418,39 @@ if [[ "$RUN_GEMINI" == "true" && "$GEMINI_STATUS" -eq 0 ]]; then
       echo "[Gemini failed ($GEMINI_FAIL_REASON). Error log: ${ERR_CONTENT:-no errors captured}]" > "$GEMINI_OUT"
     fi
   fi
+fi
+
+# --- Phase A safety net: snapshot $WORK_DIR AFTER invocation and diff ---
+# Fails closed (exit 2) on any unauthorized worktree change. The diff
+# excludes .council-tmp/ (where response files legitimately land); any
+# other change in $WORK_DIR — including writes to gitignored files like
+# .env, dist/, node_modules/ — trips this guard.
+WORKTREE_SNAPSHOT_AFTER="$TMPDIR_COUNCIL/worktree_snapshot_after.txt"
+snapshot_worktree "$WORK_DIR" "$WORKTREE_SNAPSHOT_AFTER"
+if ! diff_worktree "$WORKTREE_SNAPSHOT_BEFORE" "$WORKTREE_SNAPSHOT_AFTER" \
+     > "$TMPDIR_COUNCIL/worktree_diff.txt" 2>&1; then
+  cat >&2 <<EOF
+
+=====================================================================
+[COUNCIL_SAFETY_NET] UNAUTHORIZED WORKTREE CHANGES DETECTED
+
+Files in $WORK_DIR changed during the advisory invocation. This is
+either an advisor sandbox escape, or genuine concurrent work by you
+or another process during the council run.
+
+Diff:   $TMPDIR_COUNCIL/worktree_diff.txt
+Before: $WORKTREE_SNAPSHOT_BEFORE
+After:  $WORKTREE_SNAPSHOT_AFTER
+
+Advisor responses (still readable):
+  Codex:  $CODEX_OUT
+  Gemini: $GEMINI_OUT
+
+Review the diff carefully before integrating any advisor recommendations.
+=====================================================================
+
+EOF
+  exit 2
 fi
 
 # --- Report results ---
