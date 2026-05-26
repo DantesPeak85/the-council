@@ -20,6 +20,21 @@
 #   AGY_PRINT_TIMEOUT — Override agy --print-timeout (default: 8m)
 #                      agy's own 5m default can race with COUNCIL_TIMEOUT; 8m
 #                      gives COUNCIL_TIMEOUT room to be the outer bound.
+#   COUNCIL_SNAPSHOT_EXCLUDES — Comma-separated list of additional paths to
+#                      exclude from the Phase A worktree snapshot. Each entry
+#                      is a path relative to the working directory (no glob
+#                      anchoring needed — entries are wrapped as
+#                      ':(exclude)<entry>/**' for git mode and
+#                      '-not -path "*/<entry>/*"' for find mode). Useful on
+#                      monorepos with large gitignored trees (node_modules at
+#                      multiple depths, build/, dist/, vendored data dirs) where
+#                      hashing every file blows past COUNCIL_TIMEOUT.
+#                      Example:
+#                        COUNCIL_SNAPSHOT_EXCLUDES='node_modules,dist,build,RAG_Docs'
+#                      Trade-off: any excluded path is a blind spot in the
+#                      diff safety net — an advisor sandbox-escape that ALSO
+#                      writes into one of these paths would go undetected.
+#                      Don't exclude paths an advisor could plausibly target.
 
 set -euo pipefail
 
@@ -94,17 +109,44 @@ snapshot_worktree() {
   #                        sandbox profile (uses Apple APIs that bypass
   #                        sandbox-exec file-write-create checks). Not a
   #                        security concern — just housekeeping JSON.
+  #   plus anything listed in COUNCIL_SNAPSHOT_EXCLUDES (comma-separated,
+  #   paths relative to $dir). Each user-supplied entry expands to
+  #   ':(exclude)<entry>/**' in git mode and '-not -path "*/<entry>/*"' in
+  #   find mode. See header for trade-offs.
+
+  # Build exclude arrays from COUNCIL_SNAPSHOT_EXCLUDES (comma-separated).
+  local -a git_extra_excludes=()
+  local -a find_extra_excludes=()
+  if [[ -n "${COUNCIL_SNAPSHOT_EXCLUDES:-}" ]]; then
+    local IFS_OLD="$IFS"
+    IFS=','
+    local entry
+    for entry in $COUNCIL_SNAPSHOT_EXCLUDES; do
+      # Strip leading/trailing whitespace + leading/trailing slashes.
+      entry="${entry#"${entry%%[![:space:]]*}"}"
+      entry="${entry%"${entry##*[![:space:]]}"}"
+      entry="${entry#/}"
+      entry="${entry%/}"
+      [[ -z "$entry" ]] && continue
+      git_extra_excludes+=( ":(exclude)${entry}/**" )
+      find_extra_excludes+=( -not -path "*/${entry}/*" )
+    done
+    IFS="$IFS_OLD"
+  fi
+
   if git -C "$dir" rev-parse --is-inside-work-tree &>/dev/null; then
     {
       echo "MODE=git"
       git -C "$dir" rev-parse HEAD 2>/dev/null || echo "HEAD=none"
       git -C "$dir" status --porcelain=v1 --untracked-files=all --ignored=traditional \
-        -- ':(exclude).council-tmp/**' ':(exclude).antigravitycli/**'
+        -- ':(exclude).council-tmp/**' ':(exclude).antigravitycli/**' \
+           ${git_extra_excludes[@]+"${git_extra_excludes[@]}"}
       # Hash tracked + ALL untracked (including gitignored), minus the
       # excluded paths. Omitting --exclude-standard so --others includes
       # gitignored entries.
       git -C "$dir" ls-files --cached --others -z \
         -- ':(exclude).council-tmp/**' ':(exclude).antigravitycli/**' \
+           ${git_extra_excludes[@]+"${git_extra_excludes[@]}"} \
         | xargs -0 -I {} sh -c "cd '$dir' && sha256sum -- '{}' 2>/dev/null" \
         | LC_ALL=C sort
     } > "$out_file"
@@ -115,6 +157,7 @@ snapshot_worktree() {
         -not -path '*/.council-tmp/*' \
         -not -path '*/.antigravitycli/*' \
         -not -path '*/.git/*' \
+        ${find_extra_excludes[@]+"${find_extra_excludes[@]}"} \
         -exec sha256sum -- {} \; 2>/dev/null \
         | LC_ALL=C sort
     } > "$out_file"
