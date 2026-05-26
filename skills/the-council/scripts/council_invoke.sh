@@ -105,7 +105,7 @@ snapshot_worktree() {
       # gitignored entries.
       git -C "$dir" ls-files --cached --others -z \
         -- ':(exclude).council-tmp/**' ':(exclude).antigravitycli/**' \
-        | xargs -0 -I {} sh -c "cd '$dir' && sha256sum -- '{}' 2>/dev/null" \
+        | ( cd "$dir" && xargs -0 sha256sum -- 2>/dev/null ) \
         | LC_ALL=C sort
     } > "$out_file"
   else
