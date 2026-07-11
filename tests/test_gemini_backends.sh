@@ -78,5 +78,43 @@ else
   pass "A5: 'policy'/'blocked' words in response not treated as failure"
 fi
 
+# gemini-cli backend:
+#   G1. COUNCIL_GEMINI_BACKEND=gemini uses `gemini` CLI with --output-format json
+#   G2. Request content travels via stdin; response parsed from JSON .response
+#   G3. auto: GEMINI_API_KEY set + gemini in PATH → gemini backend chosen
+#   G4. auto: no GEMINI_API_KEY → agy fallback chosen
+cp "$REPO_ROOT/tests/fixtures/fake-gemini.sh" "$FAKE_BIN/gemini"; chmod +x "$FAKE_BIN/gemini"
+export FAKE_GEMINI_LOG="$TMPDIR_TEST/gemini.log"
+
+rm -rf "$PROJECT/.council-tmp"
+set +e
+COUNCIL_GEMINI_BACKEND=gemini GEMINI_API_KEY=test-key PATH="$FAKE_BIN:$PATH" \
+  bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$PROMPT" "$PROJECT" \
+  > "$TMPDIR_TEST/gstdout.log" 2> "$TMPDIR_TEST/gstderr.log"
+RC=$?
+set -e
+[[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/gstderr.log"; fail "G1: gemini backend run exited $RC"; }
+grep -q 'ARGV:.*--output-format json' "$FAKE_GEMINI_LOG" || fail "G1: missing --output-format json"
+grep -Eq 'STDIN_BYTES:[1-9][0-9]{2,}' "$FAKE_GEMINI_LOG" || fail "G2: request did not travel via stdin"
+RESP="$(find "$PROJECT/.council-tmp" -name gemini_response.md | head -1)"
+grep -q 'Fake gemini-cli review body' "$RESP" || fail "G2: .response not extracted from JSON envelope"
+pass "G1/G2: gemini-cli backend, stdin request, JSON parse"
+
+: > "$FAKE_GEMINI_LOG"; : > "$FAKE_AGY_LOG"
+rm -rf "$PROJECT/.council-tmp"
+COUNCIL_GEMINI_BACKEND=auto GEMINI_API_KEY=test-key PATH="$FAKE_BIN:$PATH" \
+  bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$PROMPT" "$PROJECT" >/dev/null 2>&1 \
+  || fail "G3: auto+key run errored"
+[[ -s "$FAKE_GEMINI_LOG" ]] || fail "G3: auto with key did not pick gemini-cli"
+pass "G3: auto prefers gemini-cli when GEMINI_API_KEY set"
+
+: > "$FAKE_GEMINI_LOG"; : > "$FAKE_AGY_LOG"
+rm -rf "$PROJECT/.council-tmp"
+env -u GEMINI_API_KEY COUNCIL_GEMINI_BACKEND=auto PATH="$FAKE_BIN:$PATH" \
+  bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$PROMPT" "$PROJECT" >/dev/null 2>&1 \
+  || fail "G4: auto-no-key run errored"
+[[ -s "$FAKE_AGY_LOG" ]] || fail "G4: auto without key did not fall back to agy"
+pass "G4: auto falls back to agy without GEMINI_API_KEY"
+
 echo ""
 echo "ALL GEMINI BACKEND TESTS PASSED"

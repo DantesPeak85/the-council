@@ -298,9 +298,121 @@ run_agy_pty() {
   fi
 }
 
-# Backend dispatcher — Task 4 adds invoke_gemini_cli; until then agy is the only path.
+# gemini-cli backend: purpose-built headless mode. Preferred when a paid
+# GEMINI_API_KEY exists (oauth-personal stopped serving 2026-06-18). Request
+# travels via stdin (no ARG_MAX); response is the documented JSON envelope
+# {response, stats, error}.
+# Council R1 correction: `-p` alone does NOT disable tools/extensions/MCP —
+# gemini-cli is still agentic. Enforcement here is layered:
+#   (a) explicit flags verified against `gemini --help` at implementation
+#       time (gemini-cli 0.42.0): `--approval-mode default` is a valid choice
+#       ("prompt for approval") — in headless/non-interactive mode there is no
+#       one to prompt, so unapprovable tool calls FAIL instead of executing.
+#       (The even-stricter `plan` choice = read-only mode exists too, but
+#       `default` matches the brief and layers (b)+(c) already deny writes.)
+#   (b) the SAME sandbox-exec deny-write wrapper as agy (no pty needed —
+#       gemini-cli has no TTY-gating bug) so any tool write fails at the OS;
+#   (c) cwd = $TMPDIR_COUNCIL, not the project.
+# All failure placeholders carry the [COUNCIL-ADVISOR-FAILURE] prefix that
+# validate_response treats as hard failure.
+invoke_gemini_cli() {
+  local raw_out="$TMPDIR_COUNCIL/gemini_cli_raw.json"
+  local gemini_args=(-p "Respond fully to the review request provided on stdin. Start your response with a VERDICT: line." --output-format json --approval-mode default)
+  if [[ -n "$COUNCIL_GEMINI_MODEL" ]]; then
+    gemini_args+=(-m "$COUNCIL_GEMINI_MODEL")
+  fi
+  run_sandboxed_no_pty gemini "${gemini_args[@]}" \
+    < "$GEMINI_REQUEST_FILE" \
+    > "$raw_out" \
+    2>"$GEMINI_ERR" || {
+      local status=$?
+      if [[ "$status" -eq 124 ]]; then
+        echo "Gemini (gemini-cli) timed out after ${TIMEOUT_SECS}s (COUNCIL_TIMEOUT)." >&2
+        echo "[COUNCIL-ADVISOR-FAILURE] Gemini timed out (COUNCIL_TIMEOUT=${TIMEOUT_SECS}s)." > "$GEMINI_OUT"
+      elif [[ "$status" -eq 53 ]]; then
+        echo "Gemini (gemini-cli) hit its turn limit (exit 53)." >&2
+        echo "[COUNCIL-ADVISOR-FAILURE] Gemini hit model.maxSessionTurns (exit 53)." > "$GEMINI_OUT"
+      else
+        echo "Gemini (gemini-cli) invocation failed (exit $status). See $GEMINI_ERR" >&2
+        echo "[COUNCIL-ADVISOR-FAILURE] Gemini failed to respond (exit $status). See $GEMINI_ERR." > "$GEMINI_OUT"
+      fi
+      return "$status"
+    }
+  # Extract .response from the JSON envelope (python3: no jq dependency).
+  # Council R1: error envelopes exit NONZERO so failures cannot launder into
+  # success; the bash fallback writes the standard failure placeholder.
+  python3 - "$raw_out" > "$GEMINI_OUT" <<'PYEOF' || {
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception as e:
+    print(f"[COUNCIL-ADVISOR-FAILURE] Gemini JSON envelope unparseable: {e}")
+    sys.exit(3)
+err = data.get("error")
+if err:
+    print(f"[COUNCIL-ADVISOR-FAILURE] Gemini error: {err.get('type','?')}: {err.get('message','?')}")
+    sys.exit(3)
+resp = data.get("response", "")
+if not resp.strip():
+    print("[COUNCIL-ADVISOR-FAILURE] Gemini returned an empty response field.")
+    sys.exit(3)
+print(resp)
+PYEOF
+    return 3
+  }
+}
+
+# sandbox-exec wrapper WITHOUT pty (for gemini-cli). Same profile/params as
+# run_agy_pty; refuses on non-macOS unless --allow-unsandboxed-gemini.
+run_sandboxed_no_pty() {
+  if [[ "$ALLOW_UNSANDBOXED_GEMINI" == "true" ]]; then
+    run_with_timeout "$@"
+    return $?
+  fi
+  if command -v sandbox-exec &>/dev/null && [[ -f "$SANDBOX_PROFILE" ]]; then
+    local home_gemini="$HOME/.gemini" home_caches="$HOME/Library/Caches"
+    local sys_tmp="/tmp" sys_private_tmp="/private/tmp" sys_var_folders="/private/var/folders"
+    local var
+    for var in home_gemini TMPDIR_COUNCIL home_caches sys_tmp sys_private_tmp sys_var_folders; do
+      [[ -z "${!var:-}" ]] && { echo "ERROR: sandbox param '$var' empty." >&2; return 1; }
+    done
+    run_with_timeout sandbox-exec -f "$SANDBOX_PROFILE" \
+      -D HOME_GEMINI="$home_gemini" -D TMPDIR_COUNCIL="$TMPDIR_COUNCIL" \
+      -D HOME_LIBRARY_CACHES="$home_caches" -D SYS_TMP="$sys_tmp" \
+      -D SYS_PRIVATE_TMP="$sys_private_tmp" -D SYS_VAR_FOLDERS="$sys_var_folders" \
+      "$@"
+  else
+    echo "ERROR: sandbox-exec not found; pass --allow-unsandboxed-gemini to override." >&2
+    return 1
+  fi
+}
+
+# Backend selection (Council R1: resolved ONCE into COUNCIL_GEMINI_BACKEND_RESOLVED
+# during startup, shared by banner + availability checks + this dispatcher):
+#   gemini — force gemini-cli (missing binary/auth = hard, clearly-labeled failure)
+#   agy    — force agy
+#   auto   — gemini-cli iff (`gemini` in PATH AND GEMINI_API_KEY set), else agy.
+#            In auto mode ONLY: if gemini-cli fails for ANY reason and agy is
+#            available, fall back ONCE to agy and log the fallback loudly.
 invoke_gemini_backend() {
-  invoke_gemini_agy
+  local backend="$COUNCIL_GEMINI_BACKEND_RESOLVED"
+  case "$backend" in
+    gemini)
+      local status=0
+      invoke_gemini_cli || status=$?
+      if [[ "$status" -ne 0 ]]; then
+        if [[ "$COUNCIL_GEMINI_BACKEND" == "auto" ]] && command -v agy &>/dev/null; then
+          echo "gemini-cli failed (exit $status) — auto mode falling back to agy (one attempt)." >&2
+          invoke_gemini_agy
+          return $?
+        fi
+        # Forced gemini: fail clearly, never silently succeed (Council R1).
+        return "$status"
+      fi
+      ;;
+    agy) invoke_gemini_agy ;;
+    *) echo "ERROR: unknown resolved backend '$backend'" >&2; return 1 ;;
+  esac
 }
 
 # Test seam (must come AFTER function definitions, BEFORE flag parsing).
@@ -369,6 +481,18 @@ AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-8m}"
 COUNCIL_GEMINI_BACKEND="${COUNCIL_GEMINI_BACKEND:-auto}"
 COUNCIL_GEMINI_MODEL="${COUNCIL_GEMINI_MODEL:-}"
 
+# Resolve the Gemini backend ONCE (Council R1) — banner, availability checks,
+# and the dispatcher all read this. `auto` prefers gemini-cli only when BOTH a
+# `gemini` binary is on PATH AND a paid GEMINI_API_KEY is set; otherwise agy.
+COUNCIL_GEMINI_BACKEND_RESOLVED="$COUNCIL_GEMINI_BACKEND"
+if [[ "$COUNCIL_GEMINI_BACKEND" == "auto" ]]; then
+  if command -v gemini &>/dev/null && [[ -n "${GEMINI_API_KEY:-}" ]]; then
+    COUNCIL_GEMINI_BACKEND_RESOLVED="gemini"
+  else
+    COUNCIL_GEMINI_BACKEND_RESOLVED="agy"
+  fi
+fi
+
 # Resolve display names for models (show user what's actually being used)
 if [[ -n "$CODEX_MODEL" ]]; then
   CODEX_MODEL_DISPLAY="$CODEX_MODEL"
@@ -379,7 +503,7 @@ fi
 if [[ -n "$COUNCIL_GEMINI_MODEL" ]]; then
   GEMINI_MODEL_DISPLAY="$COUNCIL_GEMINI_MODEL"
 else
-  GEMINI_MODEL_DISPLAY="Gemini 3.5 Flash (default)"
+  GEMINI_MODEL_DISPLAY="backend default"
 fi
 
 if [[ ! -f "$PROMPT_FILE" ]]; then
@@ -392,9 +516,17 @@ if [[ "$RUN_CODEX" == "true" ]] && ! command -v codex &>/dev/null; then
   echo "ERROR: 'codex' not found in PATH. Install it or check your shell environment." >&2
   exit 1
 fi
-if [[ "$RUN_GEMINI" == "true" ]] && ! command -v agy &>/dev/null; then
-  echo "ERROR: 'agy' not found in PATH. Install it or check your shell environment." >&2
-  exit 1
+if [[ "$RUN_GEMINI" == "true" ]]; then
+  # Check the RESOLVED backend's binary (resolution happens near the env
+  # defaults above). auto-with-gemini-but-no-key resolves to agy, so this
+  # verifies agy — NOT gemini — is present, closing the old gap where auto
+  # passed the check then dispatched to a missing binary (Council R1).
+  case "$COUNCIL_GEMINI_BACKEND_RESOLVED" in
+    agy)
+      command -v agy &>/dev/null || { echo "ERROR: resolved Gemini backend is 'agy' but agy is not in PATH." >&2; exit 1; } ;;
+    gemini)
+      command -v gemini &>/dev/null || { echo "ERROR: resolved Gemini backend is 'gemini' but gemini is not in PATH." >&2; exit 1; } ;;
+  esac
 fi
 
 PROMPT="$(cat "$PROMPT_FILE")"
@@ -455,17 +587,26 @@ fi
 
 # Capture CLI versions for the banner (1.3.0+: forensic continuity per
 # Council R1). Lightweight — these are direct CLI calls, not preflight cache.
+# Query only the RESOLVED Gemini backend's binary (Council R1: no hardcoded
+# agy). `< /dev/null` guards against a --version probe blocking on inherited
+# stdin (some CLIs read stdin unconditionally).
 CODEX_VERSION_DISPLAY=""
-AGY_VERSION_DISPLAY=""
-[[ "$RUN_CODEX" == "true" ]] && CODEX_VERSION_DISPLAY="$(codex --version 2>/dev/null | head -1 | tr -d '\r' || true)"
-[[ "$RUN_GEMINI" == "true" ]] && AGY_VERSION_DISPLAY="$(agy --version 2>/dev/null | head -1 | tr -d '\r' || true)"
+GEMINI_VERSION_DISPLAY=""
+[[ "$RUN_CODEX" == "true" ]] && CODEX_VERSION_DISPLAY="$(codex --version </dev/null 2>/dev/null | head -1 | tr -d '\r' || true)"
+if [[ "$RUN_GEMINI" == "true" ]]; then
+  case "$COUNCIL_GEMINI_BACKEND_RESOLVED" in
+    agy)    GEMINI_VERSION_DISPLAY="$(agy --version </dev/null 2>/dev/null | head -1 | tr -d '\r' || true)" ;;
+    gemini) GEMINI_VERSION_DISPLAY="$(gemini --version </dev/null 2>/dev/null | head -1 | tr -d '\r' || true)" ;;
+  esac
+fi
 
 echo "Invoking The Council ($MODE)..."
 [[ "$RUN_CODEX" == "true" ]] && echo "  Codex model:  $CODEX_MODEL_DISPLAY"
 [[ "$RUN_CODEX" == "true" ]] && echo "  Codex effort: ${COUNCIL_CODEX_EFFORT} (COUNCIL_CODEX_EFFORT)"
 [[ "$RUN_CODEX" == "true" ]] && echo "  Codex CLI:    ${CODEX_VERSION_DISPLAY:-unknown}"
-[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model: $GEMINI_MODEL_DISPLAY"
-[[ "$RUN_GEMINI" == "true" ]] && echo "  agy CLI:      ${AGY_VERSION_DISPLAY:-unknown}"
+[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini backend: $COUNCIL_GEMINI_BACKEND_RESOLVED"
+[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model:   $GEMINI_MODEL_DISPLAY"
+[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini CLI:     ${GEMINI_VERSION_DISPLAY:-unknown}"
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s ($([[ -n "$TIMEOUT_CMD" ]] && echo "$TIMEOUT_CMD" || echo "bash watchdog"))"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Agy timeout:  ${AGY_PRINT_TIMEOUT} (AGY_PRINT_TIMEOUT)"
