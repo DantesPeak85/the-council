@@ -56,7 +56,8 @@ backend automatically (`COUNCIL_GEMINI_BACKEND=auto`):
 | `GEMINI_CLI_AVAILABLE` | `GEMINI_API_KEY_SET` | Backend |
 |---|---|---|
 | true | true | `gemini` (gemini-cli, single-shot JSON — preferred) |
-| anything else | | `agy` (pty-wrapped, sandboxed, single-shot) |
+| true | false | `agy` (pty-wrapped, sandboxed, single-shot) |
+| false | any | `agy` (pty-wrapped, sandboxed, single-shot) |
 
 Note: gemini-cli's free oauth-personal auth stopped serving 2026-06-18 — the
 gemini backend requires a paid `GEMINI_API_KEY` (AI Studio) exported in the
@@ -207,25 +208,32 @@ When the second advisor finishes, read its response and proceed to Step 3.5 (que
 
 #### 3c. Handling Failures
 
-When an advisor fails (non-zero exit, empty response file, or error patterns in output):
+An advisor has failed only when the invoke script says so — it prints
+`(failed: <reason>)` next to the response path and exits 1. When that happens:
 
 1. **Read the error log first** — always read the `*_error.log` file from the temp directory before reporting failure:
    - Codex: `<working_directory>/.council-tmp/council_codex_*/codex_error.log`
    - Gemini: `<working_directory>/.council-tmp/council_gemini_*/gemini_error.log`
 2. **Read the response file** — even failed runs may have partial output worth presenting
-3. **Report the specific error** from the log, not a guess. Common failures:
+3. **Report the script's reason string**, not a guess. The validation engine's failure reasons (v1.4.0):
    - `empty response` — advisor ran but produced no text output
-   - `unproductive state` — Gemini entered a tool-call loop
-   - `Path not in workspace` — prompt referenced files outside the sandbox
-   - `RESOURCE_EXHAUSTED` / `rate limit` — API quota hit
-   - `Argument list too long` — prompt exceeds shell argument limit (~260KB on macOS)
-   - `command not found` — CLI not installed or not in PATH
-4. **If one advisor succeeds**, present its response and note the other's failure with the actual error
+   - `placeholder` — the script wrote a `[COUNCIL-ADVISOR-FAILURE]` placeholder (launch/backend error; the placeholder's first line names the specific cause)
+   - `refusal` — refusal phrasing at the start of the response with no verdict line
+   - `non-engagement` — short verdict-less response to a large prompt
+   - `timed out (COUNCIL_TIMEOUT)` — advisor exceeded the per-advisor timeout
+   - `advisor exited N without a verdict-bearing response` — nonzero exit AND no verdict line in the response head
+
+   stderr noise (RESOURCE_EXHAUSTED, rate limit, 429...) alongside a
+   substantive response is NOT a failure — it's an advisory warning recorded
+   in `*_warnings.log`; see Error Handling. Script-level launch errors
+   (`command not found`, missing resolved-backend binary) surface in the
+   launch log before any response file exists.
+4. **If one advisor succeeds**, present its response and note the other's failure with the actual reason
 5. **If both fail**, present both error logs and suggest checking CLI authentication (`codex auth` / `gemini auth`)
 
 #### 3d. Fallback
 
-If progressive invocation is not possible (e.g., background tasks not supported), fall back to the single blocking call:
+If detached launching is unavailable in your environment, fall back to the single blocking call:
 
 ```bash
 bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
@@ -456,7 +464,12 @@ messages — always read the actual error log files before reporting failures.
 Key rules:
 
 - An advisor has FAILED only when the script says so: reasons are `empty
-  response`, `placeholder`, `refusal`, `non-engagement`, or `timed out`.
+  response`, `placeholder`, `refusal`, `non-engagement`, `timed out`, or
+  `advisor exited N without a verdict-bearing response`.
+- Loud partial success: a nonzero advisor exit WITH a verdict line in the
+  response head is RETAINED, not failed — the script writes a
+  `*_warnings.log` advisory and logs it loudly. Verify the response is
+  complete before relying on it.
 - stderr noise (RESOURCE_EXHAUSTED, rate limit, 429...) with a substantive
   response file is an ADVISORY WARNING (`*_warnings.log`), not a failure —
   present the response normally and mention the warning.
