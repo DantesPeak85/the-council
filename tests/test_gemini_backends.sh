@@ -116,5 +116,21 @@ env -u GEMINI_API_KEY COUNCIL_GEMINI_BACKEND=auto PATH="$FAKE_BIN:$PATH" \
 [[ -s "$FAKE_AGY_LOG" ]] || fail "G4: auto without key did not fall back to agy"
 pass "G4: auto falls back to agy without GEMINI_API_KEY"
 
+# G5. auto + GEMINI_API_KEY set + gemini-cli DIES (FAKE_GEMINI_FAIL=1) + agy present
+#     → the run falls back to agy ONCE, exits 0, and the fallback is LOUD.
+: > "$FAKE_GEMINI_LOG"; : > "$FAKE_AGY_LOG"
+rm -rf "$PROJECT/.council-tmp"
+set +e
+FAKE_GEMINI_FAIL=1 COUNCIL_GEMINI_BACKEND=auto GEMINI_API_KEY=test-key PATH="$FAKE_BIN:$PATH" \
+  bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$PROMPT" "$PROJECT" \
+  > "$TMPDIR_TEST/g5stdout.log" 2> "$TMPDIR_TEST/g5stderr.log"
+RC=$?
+set -e
+[[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/g5stderr.log"; fail "G5: fallback run should exit 0, got $RC"; }
+[[ -s "$FAKE_AGY_LOG" ]] || fail "G5: gemini-cli death did not fall back to agy (agy log empty)"
+grep -q 'falling back to agy' "$TMPDIR_TEST/g5stdout.log" "$TMPDIR_TEST/g5stderr.log" \
+  || fail "G5: loud fallback line ('falling back to agy') missing"
+pass "G5: gemini-cli failure → loud one-shot agy fallback, exit 0"
+
 echo ""
 echo "ALL GEMINI BACKEND TESTS PASSED"

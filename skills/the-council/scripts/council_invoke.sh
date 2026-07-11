@@ -215,8 +215,15 @@ run_with_timeout() {
 # cover OSC terminated by ESC-backslash, DCS sequences, and multi-byte CSI.
 # Order matters: escape SEQUENCES first (sed), then residual raw control
 # bytes (tr). Keep \t (\011) and \n (\012).
+# The macOS `script -q /dev/null` startup emits the LITERAL two-char string
+# `^D` (0x5E 0x44) followed by backspaces (0x08). The tr below deletes the
+# backspaces but leaves the printable `^D` orphaned at the very start — which
+# then prefixes the advisor's first line (e.g. `^DVERDICT:`) and defeats the
+# validation engine's normalized-verdict-line detection. The final, line-1-only
+# `1s///` erases that exact leading artifact AFTER the ESC strips have run, so a
+# preceding ESC reset can't hide it. No-op when the artifact is absent.
 strip_pty_artifacts() {
-  sed -E $'s/\x1B\\[[0-9;:?<=>]*[ -\\/]*[@-~]//g; s/\x1B\\][^\x07\x1B]*(\x07|\x1B\\\\)//g; s/\x1BP[^\x1B]*\x1B\\\\//g; s/\x1B[@-Z\\\\^_]//g' \
+  sed -E $'s/\x1B\\[[0-9;:?<=>]*[ -\\/]*[@-~]//g; s/\x1B\\][^\x07\x1B]*(\x07|\x1B\\\\)//g; s/\x1BP[^\x1B]*\x1B\\\\//g; s/\x1B[@-Z\\\\^_]//g; 1s/^\\^D\x08*//' \
     | tr -d '\r\000-\010\013\014\016-\037\177'
 }
 
@@ -415,6 +422,99 @@ invoke_gemini_backend() {
   esac
 }
 
+# --- Validation engine (v1.4.0) ---
+# Philosophy: the response file is ground truth for CONTENT quality, and the
+# exit status is ground truth for INVOCATION success — a failure on either
+# axis is a failure (Council R1: never launder a nonzero exit into success
+# just because the captured output looks substantive; the pty lane merges
+# stderr into the capture, so error spew can masquerade as a response).
+# v1.3.0 grepped the RESPONSE body for generic words (safety / policy /
+# blocked / quota / 429 / rate limit) which false-failed nearly every
+# substantive HIPAA/RLS review. Never reintroduce response-body word grepping.
+# All script-generated failure placeholders carry one machine-recognizable
+# prefix: [COUNCIL-ADVISOR-FAILURE].
+FAILURE_PLACEHOLDER_PREFIX='^\[COUNCIL-ADVISOR-FAILURE\]'
+# Verdict must be a NORMALIZED LINE near the top (driver prompts demand it) —
+# unanchored tokens like a quoted "APPROVE" deep in text do not count (R1).
+VERDICT_LINE='^[[:space:]]*(\**)?VERDICT(\**)?:'
+REFUSAL_PATTERNS='I cannot assist|I can.t help with|I am unable to help|I will not provide|declining this request|unable to comply'
+STDERR_WARNING_PATTERNS='RESOURCE_EXHAUSTED|rate limit|429|Maximum session turns exceeded|Loop detected, stopping execution|context length'
+
+VALIDATE_REASON=""
+
+validate_response() {
+  local out_file="$1" err_file="$2" exit_status="$3" prompt_bytes="$4" advisor="$5"
+  VALIDATE_REASON=""
+  local warn_file="${out_file%.md}_warnings.log"
+
+  # 1. Hard failures: empty output, script-written placeholder, nonzero exit.
+  if [[ ! -s "$out_file" ]]; then
+    VALIDATE_REASON="empty response"
+    return 1
+  fi
+  if grep -Eq "$FAILURE_PLACEHOLDER_PREFIX" "$out_file"; then
+    VALIDATE_REASON="placeholder ($(head -1 "$out_file" | cut -c1-120))"
+    return 1
+  fi
+  if [[ "$exit_status" -eq 124 ]]; then
+    VALIDATE_REASON="timed out (COUNCIL_TIMEOUT=${TIMEOUT_SECS:-?}s)"
+    return 1
+  fi
+  if [[ "$exit_status" -ne 0 ]]; then
+    # One defined partial-response exception (R1): keep output that carries a
+    # normalized verdict line in its head DESPITE a nonzero exit (e.g. the
+    # advisor finished writing, then its CLI died on teardown) — but downgrade
+    # loudly via the warning file, never silently.
+    if head -20 "$out_file" | grep -Eq "$VERDICT_LINE"; then
+      {
+        echo "ADVISORY: $advisor exited $exit_status but the response carries a verdict line."
+        echo "Treating as PARTIAL SUCCESS — verify the response is complete before relying on it."
+      } > "$warn_file"
+      echo "$advisor exited $exit_status with a verdict-bearing response — retained as partial (see $warn_file)." >&2
+    else
+      VALIDATE_REASON="advisor exited $exit_status without a verdict-bearing response"
+      return 1
+    fi
+  fi
+
+  local response_size
+  response_size=$(wc -c < "$out_file")
+
+  # 2. Refusal classification: refusal phrasing at the START and no normalized
+  #    verdict line in the head = refusal. (A verdict line beats a refusal
+  #    phrase only when the refusal phrase is NOT in the first 400 bytes.)
+  if head -c 400 "$out_file" | grep -Eiq "$REFUSAL_PATTERNS"; then
+    if ! head -20 "$out_file" | grep -Eq "$VERDICT_LINE"; then
+      VALIDATE_REASON="refusal"
+      return 1
+    fi
+  fi
+
+  # 3. Non-engagement: large prompt + short response + no verdict line.
+  if [[ "$prompt_bytes" -gt 2048 && "$response_size" -lt 200 ]]; then
+    if ! head -20 "$out_file" | grep -Eq "$VERDICT_LINE"; then
+      VALIDATE_REASON="non-engagement: ${response_size}-char verdict-less response on ${prompt_bytes}-byte prompt"
+      return 1
+    fi
+  fi
+
+  # 4. stderr patterns: ADVISORY ONLY when invocation succeeded and the
+  #    response has substance.
+  if [[ -s "$err_file" ]]; then
+    local matched
+    matched="$(grep -Eio "$STDERR_WARNING_PATTERNS" "$err_file" | head -3 | tr '\n' ';')" || true
+    if [[ -n "$matched" ]]; then
+      {
+        echo "ADVISORY (not a failure — response file has substance):"
+        echo "  stderr matched: $matched"
+        echo "  full log: $err_file"
+      } >> "$warn_file"
+      echo "$advisor stderr warning ($matched) — response retained." >&2
+    fi
+  fi
+  return 0
+}
+
 # Test seam (must come AFTER function definitions, BEFORE flag parsing).
 if [[ "${COUNCIL_SOURCE_ONLY:-}" == "1" ]]; then
   return 0 2>/dev/null || exit 0
@@ -609,8 +709,11 @@ echo "Invoking The Council ($MODE)..."
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini CLI:     ${GEMINI_VERSION_DISPLAY:-unknown}"
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s ($([[ -n "$TIMEOUT_CMD" ]] && echo "$TIMEOUT_CMD" || echo "bash watchdog"))"
-[[ "$RUN_GEMINI" == "true" ]] && echo "  Agy timeout:  ${AGY_PRINT_TIMEOUT} (AGY_PRINT_TIMEOUT)"
-if [[ "$RUN_GEMINI" == "true" ]]; then
+# Agy-specific banner lines: only meaningful when the resolved backend is agy
+# (the gemini-cli lane has its own timeout/sandbox story — don't mislabel it).
+[[ "$RUN_GEMINI" == "true" && "$COUNCIL_GEMINI_BACKEND_RESOLVED" == "agy" ]] \
+  && echo "  Agy timeout:  ${AGY_PRINT_TIMEOUT} (AGY_PRINT_TIMEOUT)"
+if [[ "$RUN_GEMINI" == "true" && "$COUNCIL_GEMINI_BACKEND_RESOLVED" == "agy" ]]; then
   if command -v sandbox-exec &>/dev/null && [[ -f "$SANDBOX_PROFILE" ]] && [[ "$ALLOW_UNSANDBOXED_GEMINI" != "true" ]]; then
     echo "  agy isolation: sandbox-exec (OS-level deny-write)"
   elif [[ "$ALLOW_UNSANDBOXED_GEMINI" == "true" ]]; then
@@ -670,10 +773,6 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
   GEMINI_PROMPT="$(printf '%s' "$PROMPT" | sed -E 's/jsr:[a-zA-Z0-9_@/.-]+/[jsr import redacted]/g')"
   GEMINI_REQUEST_FILE="$TMPDIR_COUNCIL/review_request.md"
   printf '%s' "$GEMINI_PROMPT" > "$GEMINI_REQUEST_FILE"
-  # Compat alias: the not-yet-rewritten validation section (Task 5) still reads
-  # $GEMINI_PROMPT_FILE for its prompt-size heuristic. Point it at the request
-  # file so that untouched section keeps working under set -u until Task 5.
-  GEMINI_PROMPT_FILE="$GEMINI_REQUEST_FILE"
 
   (
     cd "$TMPDIR_COUNCIL" || exit 1
@@ -696,90 +795,25 @@ fi
 # --- Validate responses ---
 CODEX_FAIL_REASON=""
 GEMINI_FAIL_REASON=""
+PROMPT_BYTES=$(wc -c < "$PROMPT_FILE_FINAL")
 
-# Known failure patterns in error logs (exit code 0 but actual failure)
-GEMINI_FAILURE_PATTERNS="unproductive state|Path not in workspace|exceeded maximum number of turns|RESOURCE_EXHAUSTED|rate limit|Maximum session turns exceeded|Loop detected, stopping execution|Agent execution blocked|Agent execution stopped|No input provided via stdin|Argument list too long|E2BIG|429|quota|safety|policy|blocked"
-CODEX_FAILURE_PATTERNS="rate limit|context length|unauthorized|Argument list too long|E2BIG"
-
-# Phrases agy emits when it didn't engage with the prompt (scratch-workspace
-# meta-chatter, "ready to help" boilerplate, asking for the prompt back, etc.)
-GEMINI_NON_ENGAGEMENT_PATTERNS="I am ready to help|scratch workspace directory|default workspace directory set to|please let me know what you would like to build|provide the path|/goal slash command|specified in the chat|empty except for a \`test_write.txt\`"
-
-# Check Codex response
-if [[ "$RUN_CODEX" == "true" && "$CODEX_STATUS" -eq 0 ]]; then
-  if [[ ! -s "$CODEX_OUT" ]]; then
-    CODEX_FAIL_REASON="empty response"
-  fi
-
-  # Check error log for known failure patterns
-  if [[ -s "$CODEX_ERR" ]]; then
-    MATCHED_PATTERN="$(grep -Eio "$CODEX_FAILURE_PATTERNS" "$CODEX_ERR" | head -1)" || true
-    if [[ -n "$MATCHED_PATTERN" ]]; then
-      CODEX_FAIL_REASON="${CODEX_FAIL_REASON:+${CODEX_FAIL_REASON}; }error log: $MATCHED_PATTERN"
-    fi
-  fi
-
-  if [[ -n "$CODEX_FAIL_REASON" ]]; then
+if [[ "$RUN_CODEX" == "true" ]]; then
+  if ! validate_response "$CODEX_OUT" "$CODEX_ERR" "$CODEX_STATUS" "$PROMPT_BYTES" "Codex"; then
+    CODEX_FAIL_REASON="$VALIDATE_REASON"
     CODEX_STATUS=1
     echo "Codex failed validation ($CODEX_FAIL_REASON). See $CODEX_ERR" >&2
-    if [[ ! -s "$CODEX_OUT" ]]; then
-      ERR_CONTENT=""
-      [[ -s "$CODEX_ERR" ]] && ERR_CONTENT="$(tail -20 "$CODEX_ERR")"
-      echo "[Codex failed ($CODEX_FAIL_REASON). Error log: ${ERR_CONTENT:-no errors captured}]" > "$CODEX_OUT"
-    fi
+  else
+    CODEX_STATUS=0   # validate_response already honored the raw exit status
   fi
 fi
 
-# Check Gemini response
-if [[ "$RUN_GEMINI" == "true" && "$GEMINI_STATUS" -eq 0 ]]; then
-  # Check for empty response
-  if [[ ! -s "$GEMINI_OUT" ]]; then
-    GEMINI_FAIL_REASON="empty response"
-  fi
-
-  # Check error log for known failure patterns (even with non-empty response)
-  if [[ -s "$GEMINI_ERR" ]]; then
-    MATCHED_PATTERN="$(grep -Eio "$GEMINI_FAILURE_PATTERNS" "$GEMINI_ERR" | head -1)" || true
-    if [[ -n "$MATCHED_PATTERN" ]]; then
-      GEMINI_FAIL_REASON="${GEMINI_FAIL_REASON:+${GEMINI_FAIL_REASON}; }error log: $MATCHED_PATTERN"
-    fi
-  fi
-
-  # Check response file for known failure patterns
-  if [[ -f "$GEMINI_OUT" ]]; then
-    MATCHED_PATTERN="$(grep -Eio "$GEMINI_FAILURE_PATTERNS" "$GEMINI_OUT" | head -1)" || true
-    if [[ -n "$MATCHED_PATTERN" ]]; then
-      GEMINI_FAIL_REASON="${GEMINI_FAIL_REASON:+${GEMINI_FAIL_REASON}; }response: $MATCHED_PATTERN"
-    fi
-  fi
-
-  # Non-engagement heuristic: on prompts > 2KB, agy should produce a substantive
-  # response. If exit 0 + non-empty $GEMINI_OUT but (very short OR matches a
-  # non-engagement phrase), treat as silent failure (see 2026-05-24 bug report).
-  if [[ -z "$GEMINI_FAIL_REASON" && -s "$GEMINI_OUT" ]]; then
-    PROMPT_SIZE=$(wc -c < "$GEMINI_PROMPT_FILE" 2>/dev/null || echo 0)
-    RESPONSE_SIZE=$(wc -c < "$GEMINI_OUT" 2>/dev/null || echo 0)
-    if [[ "$PROMPT_SIZE" -gt 2048 ]]; then
-      if [[ "$RESPONSE_SIZE" -lt 200 ]]; then
-        GEMINI_FAIL_REASON="non-engagement: ${RESPONSE_SIZE}-char response on ${PROMPT_SIZE}-byte prompt"
-      else
-        META_MATCH="$(grep -Eio "$GEMINI_NON_ENGAGEMENT_PATTERNS" "$GEMINI_OUT" | head -1)" || true
-        if [[ -n "$META_MATCH" ]]; then
-          GEMINI_FAIL_REASON="non-engagement: $META_MATCH"
-        fi
-      fi
-    fi
-  fi
-
-  if [[ -n "$GEMINI_FAIL_REASON" ]]; then
+if [[ "$RUN_GEMINI" == "true" ]]; then
+  if ! validate_response "$GEMINI_OUT" "$GEMINI_ERR" "$GEMINI_STATUS" "$PROMPT_BYTES" "Gemini"; then
+    GEMINI_FAIL_REASON="$VALIDATE_REASON"
     GEMINI_STATUS=1
     echo "Gemini failed validation ($GEMINI_FAIL_REASON). See $GEMINI_ERR" >&2
-    # Only overwrite if response was empty; keep partial response otherwise
-    if [[ ! -s "$GEMINI_OUT" ]]; then
-      ERR_CONTENT=""
-      [[ -s "$GEMINI_ERR" ]] && ERR_CONTENT="$(tail -20 "$GEMINI_ERR")"
-      echo "[Gemini failed ($GEMINI_FAIL_REASON). Error log: ${ERR_CONTENT:-no errors captured}]" > "$GEMINI_OUT"
-    fi
+  else
+    GEMINI_STATUS=0
   fi
 fi
 
@@ -838,3 +872,12 @@ fi
 if [[ "$RUN_GEMINI" == "true" ]]; then
   echo "$GEMINI_OUT"
 fi
+
+# --- Aggregate exit (v1.4.0) ---
+# 0 = every requested advisor produced a validated response
+# 1 = at least one requested advisor failed
+# 2 = safety-net trip (exits earlier, above)
+FINAL_STATUS=0
+[[ "$RUN_CODEX" == "true" && "$CODEX_STATUS" -ne 0 ]] && FINAL_STATUS=1
+[[ "$RUN_GEMINI" == "true" && "$GEMINI_STATUS" -ne 0 ]] && FINAL_STATUS=1
+exit "$FINAL_STATUS"

@@ -20,10 +20,18 @@ if [[ -n "$GHOST_TARGET" ]]; then
   echo "// Ghost-written by fake agy at $(date)" > "$GHOST_TARGET"
 fi
 
-# Emit a plausible Council response so the script's content validators
-# don't trigger separately.
+# Emit a plausible Council response so the script's content validators don't
+# trigger separately. v1.4.0: the validator requires a NORMALIZED `VERDICT:`
+# line in the head AND >200 chars of substance on a >2KB prompt, else it flags
+# non-engagement (which now propagates to a nonzero aggregate exit). This
+# fixture exists to exercise the SAFETY NET, not validation, so the response
+# below deliberately clears both bars — leaving exit code attributable solely
+# to the diff net (or its absence).
 cat <<'EOF'
-Council R1 verdict: APPROVE.
-The plan is sound; ship it.
+VERDICT: APPROVE
+The plan is sound and the migration's rollback path is safe. This review body is
+deliberately padded well beyond the two-hundred-character engagement floor so the
+content validators treat it as a genuine, substantive response and never interfere
+with the safety-net assertions this fixture exists to exercise. Ship it.
 EOF
 exit 0
