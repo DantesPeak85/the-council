@@ -14,9 +14,8 @@
 #
 # Environment:
 #   CODEX_MODEL    — Override Codex model (default: auto, from ~/.codex/config.toml)
-#   GEMINI_MODEL   — Override Gemini model (unused with agy CLI)
+#   COUNCIL_GEMINI_MODEL — Override Gemini model passed to agy --model (default: agy's own)
 #   COUNCIL_TIMEOUT  — Max seconds to wait per advisor (default: 600)
-#   GEMINI_MAX_TURNS — Max Gemini session turns (default: 100; COUNCIL_TIMEOUT is the primary safety net)
 #   AGY_PRINT_TIMEOUT — Override agy --print-timeout (default: 8m)
 #                      agy's own 5m default can race with COUNCIL_TIMEOUT; 8m
 #                      gives COUNCIL_TIMEOUT room to be the outer bound.
@@ -211,21 +210,64 @@ run_with_timeout() {
   return "$status"
 }
 
-# Helper: run agy under a deny-write sandbox profile (macOS sandbox-exec).
-# Mirrors Codex's OS-level read-only model. Falls back to unsandboxed only
-# when --allow-unsandboxed-gemini was passed (Council R1: don't silently
-# run unsandboxed on non-macOS).
-#
-# Council R1: all -D parameters are asserted non-empty here; an empty
-# value would cause sandbox-exec to fail with a confusing parse error.
-run_agy_sandboxed() {
-  # --allow-unsandboxed-gemini forces unsandboxed even on macOS (useful for
-  # exercising the diff safety net in isolation, or for environments where
-  # the sandbox profile would need further tuning).
+# Strip terminal artifacts from pty-captured output. Verified live 2026-07-11:
+# `script -q` leaks ^D + backspaces before child output. Council R1: also
+# cover OSC terminated by ESC-backslash, DCS sequences, and multi-byte CSI.
+# Order matters: escape SEQUENCES first (sed), then residual raw control
+# bytes (tr). Keep \t (\011) and \n (\012).
+strip_pty_artifacts() {
+  sed -E $'s/\x1B\\[[0-9;:?<=>]*[ -\\/]*[@-~]//g; s/\x1B\\][^\x07\x1B]*(\x07|\x1B\\\\)//g; s/\x1BP[^\x1B]*\x1B\\\\//g; s/\x1B[@-Z\\\\^_]//g' \
+    | tr -d '\r\000-\010\013\014\016-\037\177'
+}
+
+# agy backend: pty-wrapped print mode.
+# WHY pty: agy -p silently drops stdout when stdout is not a TTY (upstream
+# issue #76) — exactly what a `> file` redirect creates. macOS `script -q
+# /dev/null cmd...` allocates a pty; output is captured from the pty master.
+invoke_gemini_agy() {
+  local raw_out="$TMPDIR_COUNCIL/gemini_raw_pty.out"
+  local driver_prompt="Read the file review_request.md in your workspace directory and respond to it fully. Output ONLY your review — no preamble about the workspace. Start your response with a VERDICT: line."
+  local agy_args=(--print --add-dir "$TMPDIR_COUNCIL"
+                  --dangerously-skip-permissions
+                  --print-timeout "$AGY_PRINT_TIMEOUT"
+                  --prompt "$driver_prompt")
+  if [[ -n "$COUNCIL_GEMINI_MODEL" ]]; then
+    agy_args=(--model "$COUNCIL_GEMINI_MODEL" "${agy_args[@]}")
+  fi
+
+  run_agy_pty "${agy_args[@]}" < /dev/null > "$raw_out" 2>"$GEMINI_ERR" || {
+    local status=$?
+    strip_pty_artifacts < "$raw_out" > "$GEMINI_OUT" || true
+    if [[ "$status" -eq 124 ]]; then
+      echo "Gemini (agy) timed out after ${TIMEOUT_SECS}s (COUNCIL_TIMEOUT)." >&2
+      [[ -s "$GEMINI_OUT" ]] || echo "[COUNCIL-ADVISOR-FAILURE] Gemini (agy) timed out (COUNCIL_TIMEOUT=${TIMEOUT_SECS}s)." > "$GEMINI_OUT"
+    else
+      echo "Gemini (agy) invocation failed (exit $status). See $GEMINI_ERR" >&2
+      [[ -s "$GEMINI_OUT" ]] || echo "[COUNCIL-ADVISOR-FAILURE] Gemini failed to respond (exit $status). See $GEMINI_ERR." > "$GEMINI_OUT"
+    fi
+    return "$status"
+  }
+  strip_pty_artifacts < "$raw_out" > "$GEMINI_OUT"
+
+  # One belt-and-braces retry on truly-empty output.
+  if [[ ! -s "$GEMINI_OUT" && ! -s "$GEMINI_ERR" ]]; then
+    echo "Gemini (agy) returned empty response — retrying once..." >&2
+    run_agy_pty "${agy_args[@]}" < /dev/null > "$raw_out" 2>"$GEMINI_ERR" || true
+    strip_pty_artifacts < "$raw_out" > "$GEMINI_OUT" || true
+  fi
+}
+
+# pty wrapper around the (sandboxed) agy call.
+# `script -q /dev/null <cmd>` runs <cmd> with stdout attached to a pty. The
+# sandbox wrapper goes INSIDE the pty so agy sees the pty (BSD `script`
+# propagates the child's exit code — Codex-verified with an exit-7 probe).
+# Merged-stream caveat (Council R1): the pty merges agy's stdout AND stderr into
+# the capture, so $GEMINI_ERR holds only wrapper/launch errors, not agy
+# diagnostics; error forensics happen on the (stripped) raw capture.
+run_agy_pty() {
   if [[ "$ALLOW_UNSANDBOXED_GEMINI" == "true" ]]; then
     echo "WARNING: agy running UNSANDBOXED per --allow-unsandboxed-gemini." >&2
-    echo "         Phase A diff safety net is the only protection against ghost-writes." >&2
-    run_with_timeout agy "$@"
+    run_with_timeout script -q /dev/null agy "$@"
     return $?
   fi
   if command -v sandbox-exec &>/dev/null && [[ -f "$SANDBOX_PROFILE" ]]; then
@@ -234,14 +276,14 @@ run_agy_sandboxed() {
     local sys_tmp="/tmp"
     local sys_private_tmp="/private/tmp"
     local sys_var_folders="/private/var/folders"
-    # Assert all sandbox -D params are non-empty.
+    local var
     for var in home_gemini TMPDIR_COUNCIL home_caches sys_tmp sys_private_tmp sys_var_folders; do
       if [[ -z "${!var:-}" ]]; then
-        echo "ERROR: sandbox-exec parameter '$var' is empty; refusing to invoke agy unsandboxed." >&2
+        echo "ERROR: sandbox-exec parameter '$var' is empty; refusing to run agy." >&2
         return 1
       fi
     done
-    run_with_timeout sandbox-exec -f "$SANDBOX_PROFILE" \
+    run_with_timeout script -q /dev/null sandbox-exec -f "$SANDBOX_PROFILE" \
       -D HOME_GEMINI="$home_gemini" \
       -D TMPDIR_COUNCIL="$TMPDIR_COUNCIL" \
       -D HOME_LIBRARY_CACHES="$home_caches" \
@@ -251,12 +293,14 @@ run_agy_sandboxed() {
       agy "$@"
   else
     echo "ERROR: sandbox-exec not found (non-macOS or missing profile)." >&2
-    echo "       agy 1.0.2 has no native read-only mode; running unsandboxed risks" >&2
-    echo "       the 2026-05-24 ghost-write incident pattern." >&2
-    echo "       Pass --allow-unsandboxed-gemini to override (relies on Phase A diff check only)," >&2
-    echo "       or use --codex-only to skip the Gemini advisor entirely." >&2
+    echo "       Pass --allow-unsandboxed-gemini to override, or use --codex-only." >&2
     return 1
   fi
+}
+
+# Backend dispatcher — Task 4 adds invoke_gemini_cli; until then agy is the only path.
+invoke_gemini_backend() {
+  invoke_gemini_agy
 }
 
 # Test seam (must come AFTER function definitions, BEFORE flag parsing).
@@ -324,11 +368,6 @@ TIMEOUT_SECS="${COUNCIL_TIMEOUT:-600}"
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-8m}"
 COUNCIL_GEMINI_BACKEND="${COUNCIL_GEMINI_BACKEND:-auto}"
 COUNCIL_GEMINI_MODEL="${COUNCIL_GEMINI_MODEL:-}"
-# GEMINI_MODEL / GEMINI_MAX_TURNS are retained here (not in the v1.4.0 defaults
-# block above) because the Gemini lane rewrite lands in a later task; the
-# current agy lane still references both, so removing them now breaks set -u.
-GEMINI_MODEL="${GEMINI_MODEL:-}"
-GEMINI_MAX_TURNS="${GEMINI_MAX_TURNS:-100}"
 
 # Resolve display names for models (show user what's actually being used)
 if [[ -n "$CODEX_MODEL" ]]; then
@@ -337,8 +376,8 @@ else
   CODEX_MODEL_DISPLAY="$(grep -E '^model[[:space:]]*=' "${HOME}/.codex/config.toml" 2>/dev/null | head -1 | sed 's/model *= *"\(.*\)"/\1/')"
   CODEX_MODEL_DISPLAY="${CODEX_MODEL_DISPLAY:-unknown}"
 fi
-if [[ -n "$GEMINI_MODEL" ]]; then
-  GEMINI_MODEL_DISPLAY="$GEMINI_MODEL"
+if [[ -n "$COUNCIL_GEMINI_MODEL" ]]; then
+  GEMINI_MODEL_DISPLAY="$COUNCIL_GEMINI_MODEL"
 else
   GEMINI_MODEL_DISPLAY="Gemini 3.5 Flash (default)"
 fi
@@ -397,6 +436,10 @@ GEMINI_OUT="$TMPDIR_COUNCIL/gemini_response.md"
 CODEX_ERR="$TMPDIR_COUNCIL/codex_error.log"
 GEMINI_ERR="$TMPDIR_COUNCIL/gemini_error.log"
 
+# Unsandboxed agy → the snapshot is the ONLY ghost-write guard; force paranoid
+# (content-hash ignored files) so same-size in-place rewrites are still caught.
+[[ "$ALLOW_UNSANDBOXED_GEMINI" == "true" ]] && export COUNCIL_SNAPSHOT_PARANOID=1
+
 # --- Phase A safety net: snapshot $WORK_DIR BEFORE invocation ---
 WORKTREE_SNAPSHOT_BEFORE="$TMPDIR_COUNCIL/worktree_snapshot_before.txt"
 snapshot_worktree "$WORK_DIR" "$WORKTREE_SNAPSHOT_BEFORE"
@@ -425,7 +468,6 @@ echo "Invoking The Council ($MODE)..."
 [[ "$RUN_GEMINI" == "true" ]] && echo "  agy CLI:      ${AGY_VERSION_DISPLAY:-unknown}"
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s ($([[ -n "$TIMEOUT_CMD" ]] && echo "$TIMEOUT_CMD" || echo "bash watchdog"))"
-[[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini turns: ${GEMINI_MAX_TURNS} (GEMINI_MAX_TURNS)"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Agy timeout:  ${AGY_PRINT_TIMEOUT} (AGY_PRINT_TIMEOUT)"
 if [[ "$RUN_GEMINI" == "true" ]]; then
   if command -v sandbox-exec &>/dev/null && [[ -f "$SANDBOX_PROFILE" ]] && [[ "$ALLOW_UNSANDBOXED_GEMINI" != "true" ]]; then
@@ -474,82 +516,27 @@ if [[ "$RUN_CODEX" == "true" ]]; then
   CODEX_PID=$!
 fi
 
-# --- Invoke Gemini (non-interactive, plan/read-only mode with codebase access) ---
-# Gemini runs via agy CLI. maxSessionTurns is temporarily injected into
-# ~/.gemini/antigravity-cli/settings.json (configurable via GEMINI_MAX_TURNS, default 100).
+# --- Invoke Gemini (single-shot, no repo access) ---
+# v1.4.0 design: the advisor reviews INLINED content only. The prompt file is
+# placed in the per-invocation tmpdir which becomes agy's ONLY workspace —
+# no --add-dir on the project, so there is no repo-exploration turn burn,
+# no timeout race, and near-zero ghost-write surface (sandbox still wraps it).
+# The old settings-injection block (which set a gemini-cli session-turns cap)
+# was a verified NO-OP (agy never reads that key) and is deleted, not ported.
 if [[ "$RUN_GEMINI" == "true" ]]; then
-  # Sanitize jsr: imports for Gemini to avoid safety/policy blocks
-  GEMINI_PROMPT="$(echo "$PROMPT" | sed -E 's/jsr:[a-zA-Z0-9_@/.-]+/[jsr import redacted]/g')"
-
-  # Save prompt to file for diagnostics (auto-cleaned with .council-tmp/)
-  GEMINI_PROMPT_FILE="$TMPDIR_COUNCIL/gemini_prompt.txt"
-  printf '%s' "$GEMINI_PROMPT" > "$GEMINI_PROMPT_FILE"
-
-  # Temporarily inject settings to bound exploration.
-  # We modify the real settings so Gemini's auth works normally.
-  # Settings are restored via trap on EXIT/INT/TERM.
-  GEMINI_SETTINGS="$HOME/.gemini/antigravity-cli/settings.json"
-  GEMINI_SETTINGS_BACKUP=""
-  if [[ -f "$GEMINI_SETTINGS" ]]; then
-    GEMINI_SETTINGS_BACKUP="$TMPDIR_COUNCIL/gemini_settings_backup.json"
-    cp "$GEMINI_SETTINGS" "$GEMINI_SETTINGS_BACKUP"
-    python3 -c "
-import json, sys
-s = json.load(open(sys.argv[1]))
-s['maxSessionTurns'] = int(sys.argv[2])
-json.dump(s, open(sys.argv[1], 'w'), indent=2)
-" "$GEMINI_SETTINGS" "$GEMINI_MAX_TURNS"
-  else
-    mkdir -p "$(dirname "$GEMINI_SETTINGS")"
-    printf '{"maxSessionTurns":%d}' "$GEMINI_MAX_TURNS" > "$GEMINI_SETTINGS"
-    GEMINI_SETTINGS_BACKUP="__CREATED__"
-  fi
-
-  # Ensure settings are restored even if the script is killed (Ctrl+C, SIGTERM, set -e abort)
-  restore_gemini_settings() {
-    if [[ -n "${GEMINI_SETTINGS_BACKUP:-}" ]]; then
-      if [[ "$GEMINI_SETTINGS_BACKUP" == "__CREATED__" ]]; then
-        rm -f "$GEMINI_SETTINGS"
-      elif [[ -f "$GEMINI_SETTINGS_BACKUP" ]]; then
-        cp "$GEMINI_SETTINGS_BACKUP" "$GEMINI_SETTINGS"
-      fi
-    fi
-  }
-  trap restore_gemini_settings EXIT
+  # jsr:/registry specifiers trip Gemini's content classifier — redact for
+  # Gemini only (Codex sees the original). printf, not echo (escape safety).
+  GEMINI_PROMPT="$(printf '%s' "$PROMPT" | sed -E 's/jsr:[a-zA-Z0-9_@/.-]+/[jsr import redacted]/g')"
+  GEMINI_REQUEST_FILE="$TMPDIR_COUNCIL/review_request.md"
+  printf '%s' "$GEMINI_PROMPT" > "$GEMINI_REQUEST_FILE"
+  # Compat alias: the not-yet-rewritten validation section (Task 5) still reads
+  # $GEMINI_PROMPT_FILE for its prompt-size heuristic. Point it at the request
+  # file so that untouched section keeps working under set -u until Task 5.
+  GEMINI_PROMPT_FILE="$GEMINI_REQUEST_FILE"
 
   (
-    cd "$WORK_DIR" || exit 1
-    # Pipe prompt via stdin and wrap agy in an OS-level deny-write sandbox.
-    # The previous belief that --print + --dangerously-skip-permissions made
-    # agy read-only was wrong (--dangerously-skip-permissions is auto-approve);
-    # the 2026-05-24 incident proved it. Now agy is wrapped in sandbox-exec
-    # (council_sandbox.sb) so write attempts inside $WORK_DIR fail at the OS
-    # layer, mirroring Codex's --sandbox read-only.
-    run_agy_sandboxed --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
-      --print-timeout "$AGY_PRINT_TIMEOUT" \
-      < "$GEMINI_PROMPT_FILE" \
-      > "$GEMINI_OUT" \
-      2>"$GEMINI_ERR" || {
-        STATUS=$?
-        echo "Gemini (agy) invocation failed (exit $STATUS). See $GEMINI_ERR" >&2
-        echo "[Gemini failed to respond. Check $GEMINI_ERR for details.]" > "$GEMINI_OUT"
-        exit "$STATUS"
-      }
-
-    # Auto-retry once on transient empty response (exit 0, no stdout, no stderr).
-    if [[ ! -s "$GEMINI_OUT" && ! -s "$GEMINI_ERR" ]]; then
-      echo "Gemini (agy) returned empty response with no errors — retrying once..." >&2
-      run_agy_sandboxed --print --add-dir "$WORK_DIR" --dangerously-skip-permissions \
-        --print-timeout "$AGY_PRINT_TIMEOUT" \
-        < "$GEMINI_PROMPT_FILE" \
-        > "$GEMINI_OUT" \
-        2>"$GEMINI_ERR" || {
-          STATUS=$?
-          echo "Gemini (agy) retry failed (exit $STATUS). See $GEMINI_ERR" >&2
-          echo "[Gemini failed to respond on retry. Check $GEMINI_ERR for details.]" > "$GEMINI_OUT"
-          exit "$STATUS"
-        }
-    fi
+    cd "$TMPDIR_COUNCIL" || exit 1
+    invoke_gemini_backend
   ) &
   GEMINI_PID=$!
 fi
@@ -564,9 +551,6 @@ fi
 if [[ -n "$GEMINI_PID" ]]; then
   wait "$GEMINI_PID" || GEMINI_STATUS=$?
 fi
-
-# Gemini settings are restored automatically via the EXIT trap set during injection.
-# The trap handles normal exit, Ctrl+C (SIGINT), SIGTERM, and set -e aborts.
 
 # --- Validate responses ---
 CODEX_FAIL_REASON=""

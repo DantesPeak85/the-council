@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Integration test: Council Gemini branch must engage with project files on
-# a multi-kilobyte review prompt. Regression test for the 2026-05-24 silent-
-# failure bug (failure modes 1, 2 from the bug report).
+# Integration test: Council Gemini branch must engage with the review request on
+# a multi-kilobyte prompt. Regression test for the 2026-05-24 silent-failure bug
+# (failure modes 1, 2 from the bug report).
+#
+# v1.4.0 single-shot design: the advisor no longer explores project files. The
+# request body is inlined into review_request.md inside agy's tmpdir workspace,
+# so the engagement signal is a SENTINEL placed INSIDE the prompt — a response
+# that references it proves agy read review_request.md (not the repo).
 #
 # Requires real `agy` CLI installed and authenticated.
 
@@ -18,42 +23,32 @@ command -v agy >/dev/null || { echo "FAIL: agy CLI not in PATH"; exit 1; }
 TMPDIR_TEST="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
-# --- Fixture: a small project with a sentinel string in a docs file ---
+# --- Fixture: a minimal git project (WORK_DIR — hosts .council-tmp, NOT read) ---
 PROJECT="$TMPDIR_TEST/project"
-mkdir -p "$PROJECT/docs"
-cat > "$PROJECT/README.md" <<EOF
-# TestProject
+mkdir -p "$PROJECT"
+( cd "$PROJECT" && git init -q && git config user.email "test@test" && git config user.name "test"
+  echo "placeholder" > README.md
+  git add -A && git commit -q -m init )
 
-A fixture project used to verify the-council can read files from \$WORK_DIR.
-EOF
-cat > "$PROJECT/docs/ARCH.md" <<EOF
-# Architecture
-
-This system uses the $SENTINEL widget for distributed coordination.
-Replacing $SENTINEL would require a v3 protocol migration.
-EOF
-
-# --- Fixture: a >2KB prompt that explicitly references project files ---
+# --- Fixture: a >2KB prompt that CONTAINS the sentinel (the single-shot design
+#     inlines the whole request into review_request.md; agy reads it there) ---
 PROMPT="$TMPDIR_TEST/prompt.md"
 {
   echo "# Architecture Review Request"
   echo ""
-  echo "Please review the architecture of this project. Read these files first:"
+  echo "The system under review uses the $SENTINEL widget for distributed"
+  echo "coordination. Replacing $SENTINEL would require a v3 protocol migration."
   echo ""
-  echo "1. README.md"
-  echo "2. docs/ARCH.md"
+  echo "Then answer, grounded ONLY in the text above:"
   echo ""
-  echo "Then answer:"
-  echo ""
-  echo "- What is the project named?"
-  echo "- What component name appears in docs/ARCH.md?"
+  echo "- What component name is named in this request?"
   echo "- What would a v3 migration require?"
   echo ""
-  echo "Provide concrete answers grounded in what you read."
+  echo "Reference the exact component name in your answer."
   echo ""
   # Pad to >2KB to exercise the long-prompt path (failure mode 2)
   for i in $(seq 1 30); do
-    echo "Note $i: be specific. Reference exact file paths and exact strings you read."
+    echo "Note $i: be specific. Reference the exact strings you were given above."
   done
 } > "$PROMPT"
 
@@ -73,9 +68,9 @@ echo "Response length: $RESPONSE_LEN chars"
 # --- Assertions ---
 fail() { echo "FAIL: $1"; echo "--- response ---"; echo "$RESPONSE"; echo "--- end ---"; exit 1; }
 
-# Engagement: response must contain the sentinel from docs/ARCH.md
+# Engagement: response must contain the sentinel from the inlined request
 echo "$RESPONSE" | grep -q "$SENTINEL" \
-  || fail "Response did not reference sentinel '$SENTINEL' from docs/ARCH.md (agy did not read project files)"
+  || fail "Response did not reference sentinel '$SENTINEL' from review_request.md (agy did not read the inlined request)"
 
 # Non-meta: response must not be scratch-workspace meta-chatter
 echo "$RESPONSE" | grep -qi "scratch workspace" \
@@ -89,7 +84,7 @@ echo "$RESPONSE" | grep -qi "default workspace directory set to" \
 [[ "$RESPONSE_LEN" -gt 200 ]] \
   || fail "Response shorter than 200 chars on a >2KB prompt"
 
-echo "PASS: Gemini engaged with project files"
+echo "PASS: Gemini engaged with the inlined review request"
 
 # --- Detection test: meta-chatter response must be flagged ---
 echo ""

@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Regression test: pre/post-invocation diff safety net (Phase A, 1.3.0+).
 #
-# Three sub-tests, each with its own clean fixture project:
+# v1.4.0: agy's workspace is now the per-run council tmpdir (.council-tmp/<run>/),
+# so ghost targets are supplied as ABSOLUTE paths ($project/<file>) — a relative
+# --add-dir write would land in the excluded tmpdir and no longer exercise the
+# escape scenario. The absolute write lands in $WORK_DIR regardless of workspace,
+# which is exactly what the net must catch.
+#
+# Four sub-tests, each with its own clean fixture project:
 #   1. Positive: fake agy ghost-writes a tracked file → safety net trips (exit 2)
 #   2. Negative: nothing writes inside $WORK_DIR → no trigger (exit 0)
 #   3. Gitignore coverage: fake agy writes to a gitignored .env → trips (exit 2)
@@ -25,7 +31,7 @@ pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; [[ -f "$2" ]] && { echo "--- stderr ---"; cat "$2"; }; exit 1; }
 
 run_council() {
-  local fake_target="$1"   # ghost-write target (relative to project) or empty for "no write"
+  local fake_target="$1"   # ABSOLUTE ghost-write target, or empty for "no write"
   local project="$2"
   local prompt="$3"
   local stderr_log="$4"
@@ -83,7 +89,7 @@ setup_project "$PROJECT1"
 PROMPT1="$TMPDIR_TEST/prompt1.md"
 build_prompt "$PROMPT1"
 
-EXIT=$(run_council "GHOST.txt" "$PROJECT1" "$PROMPT1" "$TMPDIR_TEST/stderr1.log")
+EXIT=$(run_council "$PROJECT1/GHOST.txt" "$PROJECT1" "$PROMPT1" "$TMPDIR_TEST/stderr1.log")
 [[ "$EXIT" -eq 2 ]] || fail "Test 1: expected exit 2, got $EXIT" "$TMPDIR_TEST/stderr1.log"
 grep -q "COUNCIL_SAFETY_NET" "$TMPDIR_TEST/stderr1.log" \
   || fail "Test 1: safety net banner missing" "$TMPDIR_TEST/stderr1.log"
@@ -110,7 +116,7 @@ setup_project "$PROJECT3" $'.env\nnode_modules/\n'
 PROMPT3="$TMPDIR_TEST/prompt3.md"
 build_prompt "$PROMPT3"
 
-EXIT=$(run_council ".env" "$PROJECT3" "$PROMPT3" "$TMPDIR_TEST/stderr3.log")
+EXIT=$(run_council "$PROJECT3/.env" "$PROJECT3" "$PROMPT3" "$TMPDIR_TEST/stderr3.log")
 [[ "$EXIT" -eq 2 ]] || fail "Test 3: gitignored-file ghost-write not detected (got exit $EXIT) — gitignored blind spot is still open" "$TMPDIR_TEST/stderr3.log"
 grep -q "COUNCIL_SAFETY_NET" "$TMPDIR_TEST/stderr3.log" \
   || fail "Test 3: safety net banner missing" "$TMPDIR_TEST/stderr3.log"
@@ -125,7 +131,7 @@ setup_project "$PROJECT4"
 PROMPT4="$TMPDIR_TEST/prompt4.md"
 build_prompt "$PROMPT4"
 
-EXIT=$(run_council ".council-tmp/legitimate.txt" "$PROJECT4" "$PROMPT4" "$TMPDIR_TEST/stderr4.log")
+EXIT=$(run_council "$PROJECT4/.council-tmp/legitimate.txt" "$PROJECT4" "$PROMPT4" "$TMPDIR_TEST/stderr4.log")
 [[ "$EXIT" -eq 0 ]] || fail "Test 4: writes inside .council-tmp/ falsely tripped safety net (exit $EXIT)" "$TMPDIR_TEST/stderr4.log"
 ! grep -q "COUNCIL_SAFETY_NET" "$TMPDIR_TEST/stderr4.log" \
   || fail "Test 4: .council-tmp/ writes should be excluded" "$TMPDIR_TEST/stderr4.log"
