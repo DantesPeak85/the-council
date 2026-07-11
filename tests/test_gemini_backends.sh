@@ -104,7 +104,7 @@ pass "A6: verdict-less derail → honest failure + forensics preserved"
 
 # gemini-cli backend:
 #   G1. COUNCIL_GEMINI_BACKEND=gemini uses `gemini` CLI with --output-format json
-#   G2. Request content travels via stdin; response parsed from JSON .response
+#   G2. Request content reaches gemini via @file in its workspace; response parsed from JSON .response
 #   G3. auto: GEMINI_API_KEY set + gemini in PATH → gemini backend chosen
 #   G3b. auto: GOOGLE_API_KEY set (no GEMINI_API_KEY) → gemini backend chosen
 #   G4. auto: no Gemini key (neither GEMINI_API_KEY nor GOOGLE_API_KEY) → agy fallback
@@ -120,7 +120,7 @@ RC=$?
 set -e
 [[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/gstderr.log"; fail "G1: gemini backend run exited $RC"; }
 grep -q 'ARGV:.*--output-format json' "$FAKE_GEMINI_LOG" || fail "G1: missing --output-format json"
-grep -Eq 'STDIN_BYTES:[1-9][0-9]{2,}' "$FAKE_GEMINI_LOG" || fail "G2: request did not travel via stdin"
+grep -Eq 'REQUEST_BYTES:[1-9][0-9]{2,}' "$FAKE_GEMINI_LOG" || fail "G2: request did not reach gemini via the @file workspace reference"
 RESP="$(find "$PROJECT/.council-tmp" -name gemini_response.md | head -1)"
 grep -q 'Fake gemini-cli review body' "$RESP" || fail "G2: .response not extracted from JSON envelope"
 pass "G1/G2: gemini-cli backend, stdin request, JSON parse"

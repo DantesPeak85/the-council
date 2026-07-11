@@ -321,30 +321,40 @@ run_agy_pty() {
 
 # gemini-cli backend: purpose-built headless mode. Preferred when a paid
 # Gemini key exists — GEMINI_API_KEY or GOOGLE_API_KEY (oauth-personal stopped
-# serving 2026-06-18). Request travels via stdin (no ARG_MAX); response is the
-# documented JSON envelope {response, stats, error}.
-# Council R1 correction: `-p` alone does NOT disable tools/extensions/MCP —
-# gemini-cli is still agentic. Enforcement here is layered:
-#   (a) explicit flags verified against `gemini --help` at implementation
-#       time (gemini-cli 0.42.0): `--approval-mode default` is a valid choice
-#       ("prompt for approval") — in headless/non-interactive mode there is no
-#       one to prompt, so unapprovable tool calls FAIL instead of executing.
-#       (The even-stricter `plan` choice = read-only mode exists too, but
-#       `default` matches the brief and layers (b)+(c) already deny writes.)
-#   (b) the SAME sandbox-exec deny-write wrapper as agy (no pty needed —
-#       gemini-cli has no TTY-gating bug) so any tool write fails at the OS;
-#   (c) cwd = $TMPDIR_COUNCIL, not the project.
-# All failure placeholders carry the [COUNCIL-ADVISOR-FAILURE] prefix that
-# validate_response treats as hard failure.
+# serving 2026-06-18). Response is the documented JSON envelope
+# {response, stats, error}, extracted from the pty capture.
+#
+# Live-debugging findings (2026-07-11) that shaped this lane — do not undo:
+#   * gemini-cli HANGS when backgrounded without a pty in agent-harness
+#     contexts (same Node-CLI class as the codex run_in_background hang and
+#     agy issue #76) → it runs under `script -q` like agy.
+#   * A pty ECHOES stdin into the capture, so the request CANNOT travel via
+#     stdin any more → it is placed in the workspace dir and referenced with
+#     gemini's client-side `@file` expansion (no ARG_MAX, no echo).
+#   * gemini-cli exits 55 from an untrusted cwd → GEMINI_CLI_TRUST_WORKSPACE.
+#   * gemini-cli treats cwd as its workspace and crawls it → cwd is a
+#     dedicated subdir holding ONLY the request file.
+#   * The sandbox needed /dev/null writes + tty ioctl (setRawMode) allowed —
+#     see council_sandbox.sb.
+# Enforcement layers (Council R1): `--approval-mode default` (headless =
+# unapprovable tool calls fail), sandbox-exec deny-write, minimal workspace.
+# All failure placeholders carry the [COUNCIL-ADVISOR-FAILURE] prefix.
 invoke_gemini_cli() {
-  local raw_out="$TMPDIR_COUNCIL/gemini_cli_raw.json"
-  local gemini_args=(-p "Respond fully to the review request provided on stdin. Start your response with a VERDICT: line." --output-format json --approval-mode default)
+  local raw_pty="$TMPDIR_COUNCIL/gemini_cli_raw_pty.out"
+  # Workspace: a dedicated subdir holding only the request file.
+  local gemini_ws="$TMPDIR_COUNCIL/gemini_ws"
+  mkdir -p "$gemini_ws"
+  cp "$GEMINI_REQUEST_FILE" "$gemini_ws/review_request.md"
+  local gemini_args=(-p "@review_request.md Respond fully to the review request in that file. Start your response with a VERDICT: line." --output-format json --approval-mode default)
   if [[ -n "$COUNCIL_GEMINI_MODEL" ]]; then
     gemini_args+=(-m "$COUNCIL_GEMINI_MODEL")
   fi
-  run_sandboxed_no_pty gemini "${gemini_args[@]}" \
-    < "$GEMINI_REQUEST_FILE" \
-    > "$raw_out" \
+  # Exported (subshell-local): an env-prefix on a *function* call is not
+  # reliably exported to grandchildren.
+  export GEMINI_CLI_TRUST_WORKSPACE=true
+  ( cd "$gemini_ws" && run_gemini_pty "${gemini_args[@]}" ) \
+    < /dev/null \
+    > "$raw_pty" \
     2>"$GEMINI_ERR" || {
       local status=$?
       if [[ "$status" -eq 124 ]]; then
@@ -359,13 +369,19 @@ invoke_gemini_cli() {
       fi
       return "$status"
     }
-  # Extract .response from the JSON envelope (python3: no jq dependency).
+  # Extract .response from the JSON envelope inside the pty capture: the pty
+  # merges warnings/artifacts around the JSON, so slice from the first '{' to
+  # the last '}' before parsing (python3: no jq dependency).
   # Council R1: error envelopes exit NONZERO so failures cannot launder into
   # success; the bash fallback writes the standard failure placeholder.
-  python3 - "$raw_out" > "$GEMINI_OUT" <<'PYEOF' || {
+  python3 - "$raw_pty" > "$GEMINI_OUT" <<'PYEOF' || {
 import json, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace')
+start, end = raw.find('{'), raw.rfind('}')
 try:
-    data = json.load(open(sys.argv[1]))
+    if start == -1 or end <= start:
+        raise ValueError("no JSON object in pty capture")
+    data = json.loads(raw[start:end + 1])
 except Exception as e:
     print(f"[COUNCIL-ADVISOR-FAILURE] Gemini JSON envelope unparseable: {e}")
     sys.exit(3)
@@ -383,11 +399,12 @@ PYEOF
   }
 }
 
-# sandbox-exec wrapper WITHOUT pty (for gemini-cli). Same profile/params as
-# run_agy_pty; refuses on non-macOS unless --allow-unsandboxed-gemini.
-run_sandboxed_no_pty() {
+# pty + sandbox wrapper for gemini-cli. Mirrors run_agy_pty (Node CLIs hang
+# when backgrounded without a pty in agent-harness contexts); refuses to run
+# unsandboxed on non-macOS unless --allow-unsandboxed-gemini.
+run_gemini_pty() {
   if [[ "$ALLOW_UNSANDBOXED_GEMINI" == "true" ]]; then
-    run_with_timeout "$@"
+    run_with_timeout script -q /dev/null gemini "$@"
     return $?
   fi
   if command -v sandbox-exec &>/dev/null && [[ -f "$SANDBOX_PROFILE" ]]; then
@@ -397,11 +414,11 @@ run_sandboxed_no_pty() {
     for var in home_gemini TMPDIR_COUNCIL home_caches sys_tmp sys_private_tmp sys_var_folders; do
       [[ -z "${!var:-}" ]] && { echo "ERROR: sandbox param '$var' empty." >&2; return 1; }
     done
-    run_with_timeout sandbox-exec -f "$SANDBOX_PROFILE" \
+    run_with_timeout script -q /dev/null sandbox-exec -f "$SANDBOX_PROFILE" \
       -D HOME_GEMINI="$home_gemini" -D TMPDIR_COUNCIL="$TMPDIR_COUNCIL" \
       -D HOME_LIBRARY_CACHES="$home_caches" -D SYS_TMP="$sys_tmp" \
       -D SYS_PRIVATE_TMP="$sys_private_tmp" -D SYS_VAR_FOLDERS="$sys_var_folders" \
-      "$@"
+      gemini "$@"
   else
     echo "ERROR: sandbox-exec not found; pass --allow-unsandboxed-gemini to override." >&2
     return 1

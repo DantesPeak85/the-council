@@ -31,6 +31,17 @@
 
 ;; Writes: default deny, narrow allowlist.
 (deny file-write*)
+;; Pseudo-devices are not persistence: every `sh -c '... >/dev/null'` in a
+;; child tool breaks without this (live-caught 2026-07-11 — gemini-cli's
+;; GrepTool fallback shells out with >/dev/null and died "Operation not
+;; permitted", yielding an empty response).
+(allow file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper"))
+(allow file-write* (regex #"^/dev/tty"))
+;; Terminal control (not persistence): ink/Node CLIs call setRawMode on the
+;; pty when run under script(1); the ioctl needs explicit allowance or the
+;; CLI dies with "setRawMode EPERM" (live-caught 2026-07-11, gemini-cli).
+(allow file-ioctl (regex #"^/dev/tty"))
+(allow pseudo-tty)
 (allow file-write* (subpath (param "HOME_GEMINI")))
 (allow file-write* (subpath (param "TMPDIR_COUNCIL")))
 (allow file-write* (subpath (param "SYS_TMP")))
