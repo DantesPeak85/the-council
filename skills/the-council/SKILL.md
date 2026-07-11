@@ -5,7 +5,7 @@ description: Multi-model advisory board using OpenAI Codex CLI and Google Antigr
 
 # The Council
 
-Convene OpenAI Codex and Google Gemini as an advisory board. Both run in parallel via their CLIs, with full project context, and return independent analyses that Claude synthesizes.
+Convene OpenAI Codex and Google Gemini as an advisory board. Both run in parallel via their CLIs — Codex with read-only codebase access, Gemini reviewing the fully-inlined request — and return independent analyses that Claude synthesizes.
 
 ## Prerequisites
 
@@ -94,7 +94,7 @@ Run the sync script to copy CLAUDE.md content into AGENTS.md (for Codex):
 bash <skill_dir>/scripts/council_sync.sh <working_directory>
 ```
 
-This creates/overwrites AGENTS.md with an advisory preamble + full CLAUDE.md content. Run this once per session or when CLAUDE.md changes. Gemini does not need a context file — it runs from the project directory with read access and receives task-specific context (diffs, plans, questions) via the prompt.
+This creates/overwrites AGENTS.md with an advisory preamble + full CLAUDE.md content. Run this once per session or when CLAUDE.md changes. Gemini does not need a context file — it reviews only the inlined request, so all task context travels in the prompt itself.
 
 **Important:** After the council session, restore the user's AGENTS.md:
 ```bash

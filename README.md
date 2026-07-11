@@ -4,13 +4,13 @@
 
 > **Security advisory (2026-05-25):** Versions **1.2.0 and 1.2.1 do NOT enforce read-only on the Gemini advisor** as their docs claim — `agy`'s `--dangerously-skip-permissions` auto-approves tool calls rather than withholding them, and a 2026-05-24 incident saw agy ghost-write 8 files into a project directory. **Upgrade to 1.3.0 or later** for real OS-level sandbox enforcement (`sandbox-exec` on macOS) and a pre/post-invocation diff safety net. See [SKILL.md → Permissions and Safety](skills/the-council/SKILL.md) for the full incident note.
 
-A Claude Code skill that convenes OpenAI Codex and Google Gemini as an advisory board. Both run in parallel via their CLIs, with full project context, and return independent analyses that Claude synthesizes into a unified recommendation.
+A Claude Code skill that convenes OpenAI Codex and Google Gemini as an advisory board. Both run in parallel via their CLIs — Codex with read-only codebase access, Gemini reviewing the fully-inlined request — and return independent analyses that Claude synthesizes into a unified recommendation.
 
 ## What It Does
 
 When you say "ask the council" or request a second opinion, Claude:
 
-1. Syncs your project context (CLAUDE.md) to both advisors
+1. Syncs your project context (CLAUDE.md) to Codex via AGENTS.md
 2. Composes a prompt using the appropriate template (code review, architecture, debugging, or general)
 3. Invokes Codex and Gemini in parallel, both in **read-only sandboxes**
 4. Synthesizes the responses — highlighting consensus, divergence, and Claude's own recommendation
