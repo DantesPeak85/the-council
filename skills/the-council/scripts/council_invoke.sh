@@ -15,7 +15,7 @@
 # Environment:
 #   CODEX_MODEL    — Override Codex model (default: auto, from ~/.codex/config.toml)
 #   GEMINI_MODEL   — Override Gemini model (unused with agy CLI)
-#   COUNCIL_TIMEOUT  — Max seconds to wait per advisor (default: 300)
+#   COUNCIL_TIMEOUT  — Max seconds to wait per advisor (default: 600)
 #   GEMINI_MAX_TURNS — Max Gemini session turns (default: 100; COUNCIL_TIMEOUT is the primary safety net)
 #   AGY_PRINT_TIMEOUT — Override agy --print-timeout (default: 8m)
 #                      agy's own 5m default can race with COUNCIL_TIMEOUT; 8m
@@ -166,6 +166,16 @@ run_with_timeout() {
     "$TIMEOUT_CMD" "$TIMEOUT_SECS" "$@"
     return $?
   fi
+  # Timeout classification is signaled OUT-OF-BAND via a sentinel file the
+  # watchdog touches BEFORE sending TERM. Watchdog liveness (`kill -0`) is NOT
+  # a valid signal: a TERM-respecting command (codex dies promptly) is reaped
+  # by `wait` while the watchdog is still inside its 5s grace `sleep`, so the
+  # watchdog looks alive on the timeout path and 143 would never become 124.
+  # Sentinel from mktemp, NOT $TMPDIR_COUNCIL — this helper must also work
+  # before that dir exists.
+  local fired_sentinel
+  fired_sentinel="$(mktemp "${TMPDIR:-/tmp}/council_watchdog_fired.XXXXXX")"
+  rm -f "$fired_sentinel"   # existence == "watchdog fired"; mktemp only reserved the name
   # `0<&0` explicitly dups the inherited stdin onto the async command. Without
   # it, bash redirects a backgrounded command's stdin from /dev/null "in the
   # absence of any explicit redirections" — which would starve `codex -` of the
@@ -174,6 +184,7 @@ run_with_timeout() {
   local cmd_pid=$!
   (
     sleep "$TIMEOUT_SECS" || exit 0
+    touch "$fired_sentinel"
     kill -TERM "$cmd_pid" 2>/dev/null || true
     sleep 5
     kill -KILL "$cmd_pid" 2>/dev/null || true
@@ -181,12 +192,18 @@ run_with_timeout() {
   local watchdog_pid=$!
   local status=0
   wait "$cmd_pid" || status=$?
-  if kill -0 "$watchdog_pid" 2>/dev/null; then
-    # Command finished first — retire the watchdog (its pending sleep exits harmlessly).
-    kill "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
-  else
-    # Watchdog already fired: normalize TERM/KILL deaths to timeout(1)'s 124.
+  # Retire the watchdog: kill its sleep child FIRST (pkill -P finds children
+  # by parent pid; killing the watchdog first would reparent the sleep, leaving
+  # an orphaned full-$TIMEOUT_SECS sleep after every successful run), then the
+  # watchdog itself. Both no-op harmlessly when the watchdog already exited.
+  pkill -P "$watchdog_pid" 2>/dev/null || true
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  if [[ -e "$fired_sentinel" ]]; then
+    rm -f "$fired_sentinel"
+    # Normalize TERM/KILL deaths to timeout(1)'s 124 ONLY when the watchdog
+    # fired — a command that legitimately exits 143/137 without a fired
+    # watchdog must NOT be misclassified as a timeout.
     if [[ "$status" -eq 143 || "$status" -eq 137 ]]; then
       status=124
     fi

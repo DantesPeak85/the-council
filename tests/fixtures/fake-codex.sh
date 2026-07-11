@@ -6,6 +6,9 @@
 set -euo pipefail
 if [[ "${1:-}" == "--version" ]]; then echo "codex-cli 0.144.1 (fake)"; exit 0; fi
 if [[ "${FAKE_CODEX_FAIL:-}" == "1" ]]; then exit 1; fi   # simulate advisor death (writes nothing)
+# Simulate a slow advisor (timeout tests): sleep before doing anything, so a
+# TERM from the watchdog lands mid-run and no log/response is ever written.
+if [[ -n "${FAKE_CODEX_SLEEP:-}" ]]; then sleep "$FAKE_CODEX_SLEEP"; fi
 OUT=""; WANT_STDIN=false
 ARGS=("$@"); i=0
 while [[ $i -lt ${#ARGS[@]} ]]; do
