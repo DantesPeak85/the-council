@@ -6,6 +6,8 @@
 #   A3. pty wrap: fake agy only emits on a TTY — output must still be captured
 #   A4. NO maxSessionTurns injection: ~/.gemini/antigravity-cli/settings.json untouched
 #   A5. Response containing 'policy'/'blocked' words is NOT flagged as failure
+#   A6. Verdict gate: a verdict-less derail (agy 1.1.1 answers about its own CLI)
+#       becomes an honest [COUNCIL-ADVISOR-FAILURE], exit 1, forensics preserved
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -77,6 +79,28 @@ else
     && fail "A5: substantive response false-flagged as failure"
   pass "A5: 'policy'/'blocked' words in response not treated as failure"
 fi
+
+# A6. Verdict gate: FAKE_AGY_DERAIL=1 emits ~300 chars of plausible CLI docs with
+#     NO VERDICT line (live agy 1.1.1 derail, 4/4 runs 2026-07-11). Must become an
+#     honest failure: script exit 1, [COUNCIL-ADVISOR-FAILURE]+derailed in the
+#     response file, original text preserved to gemini_derailed.txt. The <2KB
+#     non-engagement gate never applied to these — the verdict gate is universal.
+rm -rf "$PROJECT/.council-tmp"
+set +e
+FAKE_AGY_DERAIL=1 COUNCIL_GEMINI_BACKEND=agy PATH="$FAKE_BIN:$PATH" \
+  bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$PROMPT" "$PROJECT" \
+  > "$TMPDIR_TEST/a6stdout.log" 2> "$TMPDIR_TEST/a6stderr.log"
+RC=$?
+set -e
+[[ $RC -eq 1 ]] || fail "A6: derailed run must exit 1, got $RC"
+RESP="$(find "$PROJECT/.council-tmp" -name gemini_response.md | head -1)"
+[[ -s "$RESP" ]] || fail "A6: no gemini_response.md written"
+grep -q 'COUNCIL-ADVISOR-FAILURE' "$RESP" || fail "A6: derail not converted to failure placeholder"
+grep -q 'derailed' "$RESP" || fail "A6: placeholder does not say 'derailed'"
+DERAILED="$(find "$PROJECT/.council-tmp" -name gemini_derailed.txt | head -1)"
+[[ -s "$DERAILED" ]] || fail "A6: gemini_derailed.txt forensics file missing"
+grep -q 'add-dir flag' "$DERAILED" || fail "A6: forensics file does not preserve the derailed text"
+pass "A6: verdict-less derail → honest failure + forensics preserved"
 
 # gemini-cli backend:
 #   G1. COUNCIL_GEMINI_BACKEND=gemini uses `gemini` CLI with --output-format json

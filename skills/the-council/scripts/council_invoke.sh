@@ -262,6 +262,20 @@ invoke_gemini_agy() {
     run_agy_pty "${agy_args[@]}" < /dev/null > "$raw_out" 2>"$GEMINI_ERR" || true
     strip_pty_artifacts < "$raw_out" > "$GEMINI_OUT" || true
   fi
+
+  # Derail gate (live 2026-07-11: agy 1.1.1 answered questions about its own
+  # CLI flags instead of the review on 4/4 runs; sub-2KB prompts slipped past
+  # the non-engagement gate because it only applies to large prompts). The
+  # driver prompt demands a VERDICT: line — enforce it universally for agy.
+  # Placed AFTER the empty-retry so a retry gets its chance; it gates the
+  # retry's output too. ${VERDICT_LINE:?} fails loudly if the constant is
+  # unset — an empty regex matches everything and would silently disarm this.
+  if [[ -s "$GEMINI_OUT" ]] && ! head -40 "$GEMINI_OUT" | grep -Eq "${VERDICT_LINE:?}"; then
+    cp "$GEMINI_OUT" "$TMPDIR_COUNCIL/gemini_derailed.txt"
+    echo "Gemini (agy) derailed — no VERDICT line; original preserved to gemini_derailed.txt" >&2
+    echo "[COUNCIL-ADVISOR-FAILURE] Gemini (agy) derailed — response has no VERDICT line (agy print-mode task-focus bug; see gemini_derailed.txt). Known agy 1.1.1 issue — consider COUNCIL_GEMINI_BACKEND=gemini with a GEMINI_API_KEY." > "$GEMINI_OUT"
+    return 1
+  fi
 }
 
 # pty wrapper around the (sandboxed) agy call.
