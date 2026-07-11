@@ -28,6 +28,197 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX_PROFILE="$SCRIPT_DIR/council_sandbox.sb"
 
+# --- Resolve timeout command (macOS compatibility) ---
+if command -v gtimeout &>/dev/null; then
+  TIMEOUT_CMD="gtimeout"
+elif command -v timeout &>/dev/null; then
+  TIMEOUT_CMD="timeout"
+else
+  # Fallback: no timeout enforcement
+  TIMEOUT_CMD=""
+fi
+
+### FUNCTIONS ###
+# --- Test seam: allow tests to source function definitions only ---
+# When COUNCIL_SOURCE_ONLY=1, the function definitions in this region load and
+# the script returns at the seam (below, after the last function) BEFORE flag
+# parsing / execution. Used by tests/test_snapshot_engine.sh etc. Later tasks
+# ADD functions into this region (before the seam) without further top-level
+# moves; execution code lives after the ### EXECUTION ### marker. Functions must
+# not reference globals defined below the seam except via ${VAR:-default} guards
+# (the tests source with a bare environment).
+
+# --- Worktree snapshot engine (v1.4.0) ---
+# Change-detection fingerprint of $WORK_DIR. Design (supersedes 1.3.0):
+#   * Tracked + untracked-non-ignored files: content-hashed (sha256), BATCHED
+#     through a single xargs pipeline — never one shell per file, never
+#     re-parsed through `sh -c` (apostrophe-safe; PR #2 superseded).
+#   * Gitignored files: recorded at NAME+SIZE level only via
+#     `git status --ignored` — a NEW ignored file (.env class) or a size
+#     change is detected without content-hashing gigabytes of node_modules
+#     (the 1.3GB Lisah harness-timeout root cause; PR #3 superseded).
+#   * Excludes: built-in churn paths + COUNCIL_SNAPSHOT_EXCLUDES env var
+#     (comma-separated pathspecs).
+BUILTIN_EXCLUDES=".council-tmp/**,.antigravitycli/**,.remember/**,.tmp.driveupload/**,**/*.driveupload"
+
+# stat flavor: BSD (macOS) vs GNU — resolved once; used by the ignored-file
+# name+size listing. An inline `xargs statA || xargs statB` fallback is
+# broken (first xargs consumes stdin), so we probe here instead.
+if stat -f '%z' . &>/dev/null; then
+  STAT_ARGS=(-f '%z %N')     # BSD/macOS
+else
+  STAT_ARGS=(-c '%s %n')     # GNU/Linux
+fi
+
+build_exclude_pathspecs() {
+  # Emits one ':(exclude)<glob>' per line for git commands.
+  # Council R1: split with `read -ra`, NOT `for x in $unquoted` — the latter
+  # pathname-expands globs like `.council-tmp/**` against the caller's cwd.
+  local all="${BUILTIN_EXCLUDES}"
+  if [[ -n "${COUNCIL_SNAPSHOT_EXCLUDES:-}" ]]; then
+    all="${all},${COUNCIL_SNAPSHOT_EXCLUDES}"
+  fi
+  local globs=()
+  IFS=',' read -ra globs <<< "$all"
+  local glob
+  for glob in "${globs[@]}"; do
+    [[ -n "$glob" ]] && printf ':(exclude)%s\n' "$glob"
+  done
+}
+
+snapshot_worktree() {
+  local dir="$1"
+  local out_file="$2"
+  local excludes=()
+  while IFS= read -r line; do excludes+=("$line"); done < <(build_exclude_pathspecs)
+
+  if git -C "$dir" rev-parse --is-inside-work-tree &>/dev/null; then
+    {
+      echo "MODE=git"
+      git -C "$dir" rev-parse HEAD 2>/dev/null || echo "HEAD=none"
+      # Name-level state: tracked/untracked/ignored, minus excludes.
+      git -C "$dir" status --porcelain=v1 --untracked-files=all --ignored=traditional \
+        -- "${excludes[@]}" || true
+      # Content hashes: tracked + untracked-NON-ignored only, batched.
+      # `|| true` guards: a file vanishing mid-hash (live repo) must degrade
+      # the snapshot, not abort the whole council run under set -e.
+      git -C "$dir" ls-files --cached --others --exclude-standard -z \
+        -- "${excludes[@]}" 2>/dev/null \
+        | ( cd "$dir" && xargs -0 sha256sum -- 2>/dev/null || true ) \
+        | LC_ALL=C sort
+      # Ignored files: name + size by default (no content hash) — new/removed/
+      # grown ignored files trip the diff. SECURITY LIMITATION (Council R1):
+      # a same-size in-place rewrite of an ignored file is invisible in this
+      # mode. When agy runs UNSANDBOXED (--allow-unsandboxed-gemini), the
+      # snapshot is the ONLY protection, so COUNCIL_SNAPSHOT_PARANOID=1 (set
+      # automatically in that mode) switches to full content-hashing of
+      # ignored files — slow but airtight.
+      # STAT_ARGS resolved ONCE at startup — an `xargs A || xargs B` fallback
+      # chain is broken because the first xargs consumes stdin (verified live
+      # 2026-07-11).
+      echo "-- IGNORED --"
+      if [[ "${COUNCIL_SNAPSHOT_PARANOID:-}" == "1" ]]; then
+        git -C "$dir" ls-files --others --ignored --exclude-standard -z \
+          -- "${excludes[@]}" 2>/dev/null \
+          | ( cd "$dir" && xargs -0 sha256sum -- 2>/dev/null || true ) \
+          | LC_ALL=C sort
+      else
+        git -C "$dir" ls-files --others --ignored --exclude-standard -z \
+          -- "${excludes[@]}" 2>/dev/null \
+          | ( cd "$dir" && xargs -0 stat "${STAT_ARGS[@]}" -- 2>/dev/null || true ) \
+          | LC_ALL=C sort
+      fi
+    } > "$out_file"
+  else
+    {
+      echo "MODE=find"
+      # Non-git fallback: batched hashing. Council R1: apply BOTH built-in and
+      # env-var excludes here too (glob → find -path translation: strip a
+      # trailing '/**', then '-not -path "*/<base>/*" -not -path "*/<base>"').
+      local find_excludes=(-not -path '*/.git/*')
+      local g base
+      while IFS= read -r g; do
+        g="${g#:(exclude)}"
+        base="${g%/\*\*}"
+        find_excludes+=(-not -path "*/${base}/*" -not -path "*/${base}")
+      done < <(build_exclude_pathspecs)
+      find "$dir" -type f "${find_excludes[@]}" -print0 2>/dev/null \
+        | xargs -0 sha256sum -- 2>/dev/null \
+        | LC_ALL=C sort || true
+    } > "$out_file"
+  fi
+}
+
+diff_worktree() {
+  local before="$1"
+  local after="$2"
+  diff "$before" "$after"
+}
+
+# Helper: run a command with optional timeout
+run_with_timeout() {
+  if [[ -n "$TIMEOUT_CMD" ]]; then
+    "$TIMEOUT_CMD" "$TIMEOUT_SECS" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Helper: run agy under a deny-write sandbox profile (macOS sandbox-exec).
+# Mirrors Codex's OS-level read-only model. Falls back to unsandboxed only
+# when --allow-unsandboxed-gemini was passed (Council R1: don't silently
+# run unsandboxed on non-macOS).
+#
+# Council R1: all -D parameters are asserted non-empty here; an empty
+# value would cause sandbox-exec to fail with a confusing parse error.
+run_agy_sandboxed() {
+  # --allow-unsandboxed-gemini forces unsandboxed even on macOS (useful for
+  # exercising the diff safety net in isolation, or for environments where
+  # the sandbox profile would need further tuning).
+  if [[ "$ALLOW_UNSANDBOXED_GEMINI" == "true" ]]; then
+    echo "WARNING: agy running UNSANDBOXED per --allow-unsandboxed-gemini." >&2
+    echo "         Phase A diff safety net is the only protection against ghost-writes." >&2
+    run_with_timeout agy "$@"
+    return $?
+  fi
+  if command -v sandbox-exec &>/dev/null && [[ -f "$SANDBOX_PROFILE" ]]; then
+    local home_gemini="$HOME/.gemini"
+    local home_caches="$HOME/Library/Caches"
+    local sys_tmp="/tmp"
+    local sys_private_tmp="/private/tmp"
+    local sys_var_folders="/private/var/folders"
+    # Assert all sandbox -D params are non-empty.
+    for var in home_gemini TMPDIR_COUNCIL home_caches sys_tmp sys_private_tmp sys_var_folders; do
+      if [[ -z "${!var:-}" ]]; then
+        echo "ERROR: sandbox-exec parameter '$var' is empty; refusing to invoke agy unsandboxed." >&2
+        return 1
+      fi
+    done
+    run_with_timeout sandbox-exec -f "$SANDBOX_PROFILE" \
+      -D HOME_GEMINI="$home_gemini" \
+      -D TMPDIR_COUNCIL="$TMPDIR_COUNCIL" \
+      -D HOME_LIBRARY_CACHES="$home_caches" \
+      -D SYS_TMP="$sys_tmp" \
+      -D SYS_PRIVATE_TMP="$sys_private_tmp" \
+      -D SYS_VAR_FOLDERS="$sys_var_folders" \
+      agy "$@"
+  else
+    echo "ERROR: sandbox-exec not found (non-macOS or missing profile)." >&2
+    echo "       agy 1.0.2 has no native read-only mode; running unsandboxed risks" >&2
+    echo "       the 2026-05-24 ghost-write incident pattern." >&2
+    echo "       Pass --allow-unsandboxed-gemini to override (relies on Phase A diff check only)," >&2
+    echo "       or use --codex-only to skip the Gemini advisor entirely." >&2
+    return 1
+  fi
+}
+
+# Test seam (must come AFTER function definitions, BEFORE flag parsing).
+if [[ "${COUNCIL_SOURCE_ONLY:-}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+### EXECUTION ###
+
 # --- Parse flags ---
 RUN_CODEX=true
 RUN_GEMINI=true
@@ -61,71 +252,6 @@ while [[ "${1:-}" == --* ]]; do
       ;;
   esac
 done
-
-# --- Resolve timeout command (macOS compatibility) ---
-if command -v gtimeout &>/dev/null; then
-  TIMEOUT_CMD="gtimeout"
-elif command -v timeout &>/dev/null; then
-  TIMEOUT_CMD="timeout"
-else
-  # Fallback: no timeout enforcement
-  TIMEOUT_CMD=""
-fi
-
-# --- Worktree snapshot helpers (Phase A safety net, 1.3.0+) ---
-# Captures a stable fingerprint of $WORK_DIR so we can detect unauthorized
-# writes by an advisor. Uses git if available (covers tracked + untracked
-# + gitignored, minus .council-tmp/), falls back to find+sha256 for
-# non-git directories.
-#
-# Council R1 revisions integrated:
-#   - .council-tmp/ excluded via pathspec (NOT --exclude-standard, which
-#     doesn't actually exclude it).
-#   - Gitignored files INCLUDED in snapshot (closes the .env / dist/ /
-#     node_modules/ blind spot — agy writes to those must trip the diff).
-
-snapshot_worktree() {
-  local dir="$1"
-  local out_file="$2"
-  # Paths excluded from change-detection:
-  #   .council-tmp/      — our own per-invocation response files
-  #   .antigravitycli/   — agy's per-workspace session-metadata dir; agy
-  #                        creates it in any --add-dir target regardless of
-  #                        sandbox profile (uses Apple APIs that bypass
-  #                        sandbox-exec file-write-create checks). Not a
-  #                        security concern — just housekeeping JSON.
-  if git -C "$dir" rev-parse --is-inside-work-tree &>/dev/null; then
-    {
-      echo "MODE=git"
-      git -C "$dir" rev-parse HEAD 2>/dev/null || echo "HEAD=none"
-      git -C "$dir" status --porcelain=v1 --untracked-files=all --ignored=traditional \
-        -- ':(exclude).council-tmp/**' ':(exclude).antigravitycli/**'
-      # Hash tracked + ALL untracked (including gitignored), minus the
-      # excluded paths. Omitting --exclude-standard so --others includes
-      # gitignored entries.
-      git -C "$dir" ls-files --cached --others -z \
-        -- ':(exclude).council-tmp/**' ':(exclude).antigravitycli/**' \
-        | xargs -0 -I {} sh -c "cd '$dir' && sha256sum -- '{}' 2>/dev/null" \
-        | LC_ALL=C sort
-    } > "$out_file"
-  else
-    {
-      echo "MODE=find"
-      find "$dir" -type f \
-        -not -path '*/.council-tmp/*' \
-        -not -path '*/.antigravitycli/*' \
-        -not -path '*/.git/*' \
-        -exec sha256sum -- {} \; 2>/dev/null \
-        | LC_ALL=C sort
-    } > "$out_file"
-  fi
-}
-
-diff_worktree() {
-  local before="$1"
-  local after="$2"
-  diff "$before" "$after"
-}
 
 # --- Load nvm/node environment if needed (CLIs installed via npm) ---
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -245,63 +371,6 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
   fi
 fi
 echo ""
-
-# Helper: run a command with optional timeout
-run_with_timeout() {
-  if [[ -n "$TIMEOUT_CMD" ]]; then
-    "$TIMEOUT_CMD" "$TIMEOUT_SECS" "$@"
-  else
-    "$@"
-  fi
-}
-
-# Helper: run agy under a deny-write sandbox profile (macOS sandbox-exec).
-# Mirrors Codex's OS-level read-only model. Falls back to unsandboxed only
-# when --allow-unsandboxed-gemini was passed (Council R1: don't silently
-# run unsandboxed on non-macOS).
-#
-# Council R1: all -D parameters are asserted non-empty here; an empty
-# value would cause sandbox-exec to fail with a confusing parse error.
-run_agy_sandboxed() {
-  # --allow-unsandboxed-gemini forces unsandboxed even on macOS (useful for
-  # exercising the diff safety net in isolation, or for environments where
-  # the sandbox profile would need further tuning).
-  if [[ "$ALLOW_UNSANDBOXED_GEMINI" == "true" ]]; then
-    echo "WARNING: agy running UNSANDBOXED per --allow-unsandboxed-gemini." >&2
-    echo "         Phase A diff safety net is the only protection against ghost-writes." >&2
-    run_with_timeout agy "$@"
-    return $?
-  fi
-  if command -v sandbox-exec &>/dev/null && [[ -f "$SANDBOX_PROFILE" ]]; then
-    local home_gemini="$HOME/.gemini"
-    local home_caches="$HOME/Library/Caches"
-    local sys_tmp="/tmp"
-    local sys_private_tmp="/private/tmp"
-    local sys_var_folders="/private/var/folders"
-    # Assert all sandbox -D params are non-empty.
-    for var in home_gemini TMPDIR_COUNCIL home_caches sys_tmp sys_private_tmp sys_var_folders; do
-      if [[ -z "${!var:-}" ]]; then
-        echo "ERROR: sandbox-exec parameter '$var' is empty; refusing to invoke agy unsandboxed." >&2
-        return 1
-      fi
-    done
-    run_with_timeout sandbox-exec -f "$SANDBOX_PROFILE" \
-      -D HOME_GEMINI="$home_gemini" \
-      -D TMPDIR_COUNCIL="$TMPDIR_COUNCIL" \
-      -D HOME_LIBRARY_CACHES="$home_caches" \
-      -D SYS_TMP="$sys_tmp" \
-      -D SYS_PRIVATE_TMP="$sys_private_tmp" \
-      -D SYS_VAR_FOLDERS="$sys_var_folders" \
-      agy "$@"
-  else
-    echo "ERROR: sandbox-exec not found (non-macOS or missing profile)." >&2
-    echo "       agy 1.0.2 has no native read-only mode; running unsandboxed risks" >&2
-    echo "       the 2026-05-24 ghost-write incident pattern." >&2
-    echo "       Pass --allow-unsandboxed-gemini to override (relies on Phase A diff check only)," >&2
-    echo "       or use --codex-only to skip the Gemini advisor entirely." >&2
-    return 1
-  fi
-}
 
 CODEX_PID=""
 GEMINI_PID=""
