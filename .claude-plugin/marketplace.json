@@ -1,12 +1,14 @@
 {
   "name": "the-council-marketplace",
-  "description": "Marketplace for The Council — a multi-model advisory board skill",
-  "owner": { "name": "DantesPeak85" },
+  "description": "Marketplace for The Council \u2014 a multi-model advisory board skill",
+  "owner": {
+    "name": "DantesPeak85"
+  },
   "plugins": [
     {
       "name": "the-council",
       "description": "Multi-model advisory board using Codex CLI and Gemini CLI",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "source": "./",
       "author": {
         "name": "Tom Wolinitz"
