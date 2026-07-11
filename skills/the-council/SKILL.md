@@ -50,6 +50,24 @@ Parse the output (key=value lines) and determine the operating mode:
 | `false` | `true` | **Gemini-only** — single advisor mode |
 | `false` | `false` | **Abort** — show installation instructions below |
 
+**Gemini backend resolution** (v1.4.0): the invoke script picks the Gemini
+backend automatically (`COUNCIL_GEMINI_BACKEND=auto`):
+
+| `GEMINI_CLI_AVAILABLE` | `GEMINI_API_KEY_SET` | Backend |
+|---|---|---|
+| true | true | `gemini` (gemini-cli, single-shot JSON — preferred) |
+| anything else | | `agy` (pty-wrapped, sandboxed, single-shot) |
+
+Note: gemini-cli's free oauth-personal auth stopped serving 2026-06-18 — the
+gemini backend requires a paid `GEMINI_API_KEY` (AI Studio) exported in the
+environment.
+
+**Preflight-vs-invoke caveat:** preflight counts `~/.gemini/oauth_creds.json` as
+Gemini credentials, but the invoke script's `auto` mode only selects gemini-cli
+when `GEMINI_API_KEY` is set — a machine with only stale oauth creds and no
+`agy` installed will preflight green but fail loud at invoke (the resolved
+backend `agy` is not in PATH).
+
 **If no advisors are available**, display this help and stop:
 
 ```
@@ -77,10 +95,12 @@ bash <skill_dir>/scripts/council_sync.sh <working_directory>
 
 This creates/overwrites AGENTS.md with an advisory preamble + full CLAUDE.md content. Run this once per session or when CLAUDE.md changes. Gemini does not need a context file — it runs from the project directory with read access and receives task-specific context (diffs, plans, questions) via the prompt.
 
-**Important:** After the council session, clean up the generated file:
+**Important:** After the council session, restore the user's AGENTS.md:
 ```bash
-rm <working_directory>/AGENTS.md
+bash <skill_dir>/scripts/council_sync.sh --restore <working_directory>
 ```
+Never `rm` AGENTS.md directly — repos increasingly own a real AGENTS.md and
+the sync script backs it up / restores it.
 
 ### 2. Compose the Advisory Prompt
 
@@ -102,31 +122,72 @@ Write the composed prompt to a temporary file. Include all relevant context inli
 - For code review: the diff must be inlined (advisors don't have access to git staging), but surrounding context files can be referenced by path
 - For large files referenced in the prompt: include the most relevant sections inline, note the file path for full context
 
+#### Mandatory prompt blocks
+
+1. **Defensive framing** (all reviews): open with "This is a defensive code
+   review / secure-coding audit of our own application code." Never phrase
+   security asks as "find vulnerabilities to exploit" — both advisors'
+   safety classifiers throttle offensive framing (Gemini refuses; Codex may
+   route to a lesser model).
+
+2. **No-explore directive** (plan reviews and any prompt referencing many
+   files): include near the top —
+   > Respond fast. Do NOT explore the repository — everything you need is
+   > inline. Reason from the inline content only; flag file-dependent
+   > concerns as assumptions for the executor to verify.
+
+   Without this, Codex has spidered repos for 30+ minutes (2026-06-09
+   incident). Diff reviews on small file sets may omit it so Codex can read
+   adjacent code — that adjacency is why Codex catches migration-runtime
+   semantics others miss.
+
+3. **Doc-provenance preamble** (any prompt citing internal, owner-revisable
+   docs — voice charters, in-house architecture docs): state that the doc is
+   the owner's revisable direction, not external scripture; the advisor's
+   role is risk-surfacer, not charter-enforcer. List separately which
+   constraints ARE non-negotiable (HIPAA/FDA/OWASP, locked domain rules).
+   Without this, Council issues strict text-literal REVISE verdicts the
+   owner then overrules (2026-05-13 charter-as-decree incident).
+
+4. **Nitpick suppression** (gpt-5.6-sol): Sol over-flags (CodeRabbit
+   benchmark: 31.6% actionable precision). Instruct: "Rank findings by
+   severity. Suppress low-confidence nitpicks; report only findings you
+   would defend in review."
+
 ### 3. Invoke The Council (Progressive)
 
-Invoke each advisor as a **separate background bash task** so results can be presented as they arrive.
+Invoke each advisor as a **separate detached process** so results can be presented as they arrive.
 
-#### 3a. Launch Advisors as Background Tasks
+#### 3a. Launch Advisors (detached, NOT harness-background)
 
-For **Full Council** mode, launch two separate background bash commands simultaneously:
+Do NOT launch council scripts with the Bash tool's `run_in_background` — codex
+hangs at ~0 CPU in that context on large prompts (verified 2026-07-11).
+Launch each advisor DETACHED from a normal foreground Bash call, which
+returns immediately:
 
 ```bash
-# Launch Codex as background task
-bash <skill_dir>/scripts/council_invoke.sh --codex-only <prompt_file> <working_directory>
+nohup bash <skill_dir>/scripts/council_invoke.sh --codex-only <prompt_file> <working_directory> \
+  > /tmp/council_codex_launch.log 2>&1 & disown
 ```
 
 ```bash
-# Launch Gemini as background task
-bash <skill_dir>/scripts/council_invoke.sh --gemini-only <prompt_file> <working_directory>
+nohup bash <skill_dir>/scripts/council_invoke.sh --gemini-only <prompt_file> <working_directory> \
+  > /tmp/council_gemini_launch.log 2>&1 & disown
 ```
 
-Run both commands using `run_in_background: true` in the Bash tool. Each produces its own temp directory (`.council-tmp/council_codex_YYYYMMDD_HHMMSS/` and `.council-tmp/council_gemini_YYYYMMDD_HHMMSS/` inside the working directory).
+Each produces its own temp directory (`.council-tmp/council_codex_YYYYMMDD_HHMMSS/`
+and `.council-tmp/council_gemini_YYYYMMDD_HHMMSS/` inside the working directory).
 
-For **single-advisor modes** (Codex-only or Gemini-only), launch only the available advisor as a single background task.
+Then poll for the response files (the launch log's last lines name them) —
+e.g. with a Monitor until-loop on file existence, or periodic checks. A
+liveness rule: if the advisor process shows under ~2s of CPU time after
+120s, treat it as hung, kill it, and relaunch once.
+
+For **single-advisor modes** (Codex-only or Gemini-only), launch only the available advisor as a single detached process.
 
 #### 3b. Poll and Present Progressive Results
 
-After launching both tasks, poll for completion using non-blocking `TaskOutput` checks (with `block: false`). When the first advisor finishes:
+After launching both advisors, poll for their response files (per §3a) rather than blocking on either. When the first advisor finishes:
 
 1. **Read its response** from the temp directory path printed in its output
 2. **Present the early result** to the user immediately:
@@ -171,9 +232,26 @@ bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
 ```
 
 **Environment overrides:**
-- `CODEX_MODEL` — default: auto (from `~/.codex/config.toml`)
-- `GEMINI_MAX_TURNS` — default: `100` (session turns; `COUNCIL_TIMEOUT` is the primary safety net)
-- `AGY_PRINT_TIMEOUT` — default: `8m` (override agy `--print-timeout`; agy's 5m default can race with `COUNCIL_TIMEOUT`; 8m keeps `COUNCIL_TIMEOUT` as the outer bound)
+- `CODEX_MODEL` — default: from `~/.codex/config.toml` (standard: gpt-5.6-sol)
+- `COUNCIL_CODEX_EFFORT` — default: `xhigh`; set `config` to defer to config.toml
+- `COUNCIL_TIMEOUT` — default: `600` (seconds per advisor; raise to 900 for very large xhigh reviews)
+- `COUNCIL_GEMINI_BACKEND` — default: `auto` (`gemini` | `agy`)
+- `COUNCIL_GEMINI_MODEL` — optional model pin for either backend
+- `COUNCIL_SNAPSHOT_EXCLUDES` — comma-separated pathspecs excluded from the safety-net snapshot
+- `AGY_PRINT_TIMEOUT` — default: `8m` (must stay below COUNCIL_TIMEOUT)
+
+### During the Advisory Window (MANDATORY)
+
+- **No writes anywhere under the working tree while any advisor runs.** Not
+  scratch ledgers, not `.generated` regens, not fixes for findings the
+  first-returning advisor reported. The safety net hashes everything; a
+  one-line append fires exit 2, and applying fixes mid-window makes the
+  still-running advisor review a stale tree (2026-06-18 + 2026-07-04
+  incidents). Do bookkeeping in the session scratchpad OUTSIDE the repo.
+- **Run Council before CodeRabbit, never concurrently.** Concurrent
+  CodeRabbit cache writes trip the safety net, and 3 concurrent heavy
+  reviews starved Codex to an empty-output death (2026-06-16). Cap
+  concurrent heavy review processes at 2 (the two Council advisors).
 
 ### 3.5. Question Detection & Auto-Retry
 
@@ -263,7 +341,7 @@ If you presented an early result during progressive polling (Step 3b), the user 
 ## Codex ({codex_model})
 [Full Codex response]
 
-## Gemini (Gemini 3.5 Flash)
+## Gemini ({backend}/{model})
 [Full Gemini response]
 
 ## Claude's Take
@@ -278,6 +356,11 @@ Present the single advisor's response with your own assessment.
 > If Gemini (agy) dropped out mid-session or failed validation (returning an error log/response), you must explicitly surface this failure as a "degraded one-advisor Council (Codex only)" and never silently ignore it.
 >
 > If Gemini is the only advisor that responded (e.g. Gemini-only mode or Codex failed), remember that Gemini must never act as a sole shipping gate. Its opinions are strictly advisory, and Codex remains the primary codebase source of truth.
+>
+> When Gemini failed, name the failure class from the script's reason string
+> (empty / refusal / non-engagement / timeout) — "degraded one-advisor
+> Council (Codex only; Gemini: refusal)" — so patterns stay visible across
+> sessions.
 
 ```
 ## Advisory Opinion ({Advisor Name} / {model})
@@ -287,21 +370,48 @@ Present the single advisor's response with your own assessment.
 [Your own perspective, noting this was a single-advisor review]
 ```
 
+#### Verdict authority gradient (MANDATORY)
+
+- **APPROVE / APPROVE-WITH-CHANGES:** absorb mechanical refinements and
+  proceed.
+- **REVISE / RESTRUCTURE:** this is a scope/shape decision the human owns.
+  If the human previously approved the scope, HALT — present the finding
+  verbatim, a plain-English why, two paths, and one recommendation. Never
+  silently fold a scope-reducing REVISE over a prior human approval
+  (2026-05-26 incident).
+- **Repeated residuals:** when a cheap patch leaks a new residual every
+  round and all residuals trace to one structural fact, stop patching and
+  take the robust option the reviewer already named (2026-06-24 lesson).
+
+#### Verifying advisor claims
+
+Gemini findings that name specific code patterns MUST be verified with one
+grep/build before being surfaced as actionable — Gemini has fabricated
+multi-file "compilation blockers" with fake code blocks (2026-04-23).
+Sweeping identical cross-file claims are a pattern-match red flag; real bugs
+concentrate in 1–2 files. Trust grep over the advisor's quoted snippet.
+Codex remains the primary source of truth and the mandatory shipping gate:
+wait for its response even when every other layer is green.
+
 ### 5. Cleanup
 
 **CRITICAL: Do NOT clean up until ALL of the following conditions are met:**
 
 1. All advisor responses (including retries) have been **fully read into your context** (i.e., you have used the Read tool on every response file and have the content in your conversation)
 2. Synthesis (Step 4) is **complete and has been presented to the user**
-3. If running with `run_in_background: true`, ensure the background task has finished AND you have read all output files before cleanup
+3. Advisors launched detached (§3a) have each exited AND you have read all output files before cleanup
 
 **Why this matters:** Response files live inside `.council-tmp/`. If you delete that directory before reading the files, the responses are lost permanently.
 
-Once all conditions above are satisfied, remove temporary files:
+Once all conditions above are satisfied, clean up in this order (ORDER IS
+LOAD-BEARING — the AGENTS.md backup lives inside `.council-tmp/`, so restore
+MUST precede deletion):
 
-- The prompt file
-- The `.council-tmp/` directory from the working directory (`rm -rf <working_directory>/.council-tmp/`) — this removes all response files, error logs, context files, and the preflight cache at once
-- AGENTS.md from the working directory
+1. `bash <skill_dir>/scripts/council_sync.sh --restore <working_directory>`
+   (restores or removes AGENTS.md from its backup inside .council-tmp/)
+2. Remove the prompt file.
+3. `rm -rf <working_directory>/.council-tmp/` — LAST, after the restore and
+   after every response file has been read into context.
 
 ## Permissions and Safety
 
@@ -327,18 +437,34 @@ Either (a) an advisor sandbox escape (rare — investigate as a real security is
 
 ## Model and Effort Configuration
 
-Both advisors run at maximum capability:
-
-- **Codex**: Model auto-selected from `~/.codex/config.toml` (override with `CODEX_MODEL` env var), reasoning effort `xhigh` (set via `~/.codex/config.toml` key `model_reasoning_effort = "xhigh"`)
-- **Gemini**: Runs via `agy` defaulting to Gemini 3.5 Flash. The session is bounded by setting `maxSessionTurns` to `100` in the user configuration.
+- **Codex**: model from `~/.codex/config.toml` (standard: `gpt-5.6-sol`,
+  1.05M context), overridable via `CODEX_MODEL`. Reasoning effort is set
+  EXPLICITLY by the script: `-c model_reasoning_effort=xhigh` by default
+  (`COUNCIL_CODEX_EFFORT` to change). Sol note: highest review recall of any
+  current model, but over-flags nitpicks — the prompt templates include a
+  suppression instruction.
+- **Gemini**: backend-dependent. gemini-cli: model via `COUNCIL_GEMINI_MODEL`
+  → `-m`. agy: `COUNCIL_GEMINI_MODEL` → `--model` (run `agy models` for ids;
+  a Pro tier gives deeper reviews than the default Flash).
+- Both advisors review INLINED content; only Codex additionally has
+  read-only filesystem access to the working directory.
 
 ## Error Handling
 
-See **Section 3c** above for detailed failure diagnostics. Key rules:
+See **Section 3c** above for detailed failure diagnostics. Never guess error
+messages — always read the actual error log files before reporting failures.
+Key rules:
 
-- **Never guess error messages** — always read the actual error log files before reporting failures
-- **Timeout** defaults to 5 minutes — suggest increasing `COUNCIL_TIMEOUT` for large reviews
-- **Empty responses** are caught by the invoke script's validation — the response file will contain the error details from stderr
+- An advisor has FAILED only when the script says so: reasons are `empty
+  response`, `placeholder`, `refusal`, `non-engagement`, or `timed out`.
+- stderr noise (RESOURCE_EXHAUSTED, rate limit, 429...) with a substantive
+  response file is an ADVISORY WARNING (`*_warnings.log`), not a failure —
+  present the response normally and mention the warning.
+- On `[COUNCIL_SAFETY_NET]` exit 2: read `worktree_diff.txt` FIRST. Known
+  benign churn (`.remember/`, `.tmp.driveupload/`) is already excluded; any
+  remaining diff is either a real advisor escape (investigate as a security
+  issue) or your own concurrent edit (see During the Advisory Window).
+  Advisor responses remain readable either way.
 
 ## Learning from the Council (Generalize Knowledge)
 
