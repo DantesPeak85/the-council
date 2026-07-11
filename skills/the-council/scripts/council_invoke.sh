@@ -306,9 +306,9 @@ run_agy_pty() {
 }
 
 # gemini-cli backend: purpose-built headless mode. Preferred when a paid
-# GEMINI_API_KEY exists (oauth-personal stopped serving 2026-06-18). Request
-# travels via stdin (no ARG_MAX); response is the documented JSON envelope
-# {response, stats, error}.
+# Gemini key exists — GEMINI_API_KEY or GOOGLE_API_KEY (oauth-personal stopped
+# serving 2026-06-18). Request travels via stdin (no ARG_MAX); response is the
+# documented JSON envelope {response, stats, error}.
 # Council R1 correction: `-p` alone does NOT disable tools/extensions/MCP —
 # gemini-cli is still agentic. Enforcement here is layered:
 #   (a) explicit flags verified against `gemini --help` at implementation
@@ -398,7 +398,8 @@ run_sandboxed_no_pty() {
 # during startup, shared by banner + availability checks + this dispatcher):
 #   gemini — force gemini-cli (missing binary/auth = hard, clearly-labeled failure)
 #   agy    — force agy
-#   auto   — gemini-cli iff (`gemini` in PATH AND GEMINI_API_KEY set), else agy.
+#   auto   — gemini-cli iff (`gemini` in PATH AND a Gemini key set —
+#            GEMINI_API_KEY or GOOGLE_API_KEY), else agy.
 #            In auto mode ONLY: if gemini-cli fails for ANY reason and agy is
 #            available, fall back ONCE to agy and log the fallback loudly.
 invoke_gemini_backend() {
@@ -583,10 +584,13 @@ COUNCIL_GEMINI_MODEL="${COUNCIL_GEMINI_MODEL:-}"
 
 # Resolve the Gemini backend ONCE (Council R1) — banner, availability checks,
 # and the dispatcher all read this. `auto` prefers gemini-cli only when BOTH a
-# `gemini` binary is on PATH AND a paid GEMINI_API_KEY is set; otherwise agy.
+# `gemini` binary is on PATH AND a paid Gemini key is set — GEMINI_API_KEY or
+# GOOGLE_API_KEY; otherwise agy. Honoring BOTH keys matches preflight, which
+# reports GEMINI_API_KEY_SET on either; checking only GEMINI_API_KEY here would
+# let a GOOGLE_API_KEY-only machine preflight green then resolve to agy.
 COUNCIL_GEMINI_BACKEND_RESOLVED="$COUNCIL_GEMINI_BACKEND"
 if [[ "$COUNCIL_GEMINI_BACKEND" == "auto" ]]; then
-  if command -v gemini &>/dev/null && [[ -n "${GEMINI_API_KEY:-}" ]]; then
+  if command -v gemini &>/dev/null && [[ -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]]; then
     COUNCIL_GEMINI_BACKEND_RESOLVED="gemini"
   else
     COUNCIL_GEMINI_BACKEND_RESOLVED="agy"

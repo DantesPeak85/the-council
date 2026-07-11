@@ -82,7 +82,8 @@ fi
 #   G1. COUNCIL_GEMINI_BACKEND=gemini uses `gemini` CLI with --output-format json
 #   G2. Request content travels via stdin; response parsed from JSON .response
 #   G3. auto: GEMINI_API_KEY set + gemini in PATH → gemini backend chosen
-#   G4. auto: no GEMINI_API_KEY → agy fallback chosen
+#   G3b. auto: GOOGLE_API_KEY set (no GEMINI_API_KEY) → gemini backend chosen
+#   G4. auto: no Gemini key (neither GEMINI_API_KEY nor GOOGLE_API_KEY) → agy fallback
 cp "$REPO_ROOT/tests/fixtures/fake-gemini.sh" "$FAKE_BIN/gemini"; chmod +x "$FAKE_BIN/gemini"
 export FAKE_GEMINI_LOG="$TMPDIR_TEST/gemini.log"
 
@@ -108,13 +109,28 @@ COUNCIL_GEMINI_BACKEND=auto GEMINI_API_KEY=test-key PATH="$FAKE_BIN:$PATH" \
 [[ -s "$FAKE_GEMINI_LOG" ]] || fail "G3: auto with key did not pick gemini-cli"
 pass "G3: auto prefers gemini-cli when GEMINI_API_KEY set"
 
+# G3b. auto: GOOGLE_API_KEY set (GEMINI_API_KEY unset) + gemini in PATH → gemini
+#      chosen. The resolver honors GOOGLE_API_KEY too, matching preflight's
+#      GEMINI_API_KEY_SET (set on either key) — guards the mismatch where a
+#      GOOGLE_API_KEY-only machine preflights green but resolves to agy.
 : > "$FAKE_GEMINI_LOG"; : > "$FAKE_AGY_LOG"
 rm -rf "$PROJECT/.council-tmp"
-env -u GEMINI_API_KEY COUNCIL_GEMINI_BACKEND=auto PATH="$FAKE_BIN:$PATH" \
+env -u GEMINI_API_KEY COUNCIL_GEMINI_BACKEND=auto GOOGLE_API_KEY=test-key PATH="$FAKE_BIN:$PATH" \
+  bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$PROMPT" "$PROJECT" >/dev/null 2>&1 \
+  || fail "G3b: auto+GOOGLE_API_KEY run errored"
+[[ -s "$FAKE_GEMINI_LOG" ]] || fail "G3b: auto with GOOGLE_API_KEY did not pick gemini-cli"
+pass "G3b: auto prefers gemini-cli when only GOOGLE_API_KEY set"
+
+# G4 unsets BOTH keys: after the resolver honors GOOGLE_API_KEY, an ambient
+# GOOGLE_API_KEY would otherwise resolve to gemini and break the agy-fallback
+# assertion.
+: > "$FAKE_GEMINI_LOG"; : > "$FAKE_AGY_LOG"
+rm -rf "$PROJECT/.council-tmp"
+env -u GEMINI_API_KEY -u GOOGLE_API_KEY COUNCIL_GEMINI_BACKEND=auto PATH="$FAKE_BIN:$PATH" \
   bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$PROMPT" "$PROJECT" >/dev/null 2>&1 \
   || fail "G4: auto-no-key run errored"
 [[ -s "$FAKE_AGY_LOG" ]] || fail "G4: auto without key did not fall back to agy"
-pass "G4: auto falls back to agy without GEMINI_API_KEY"
+pass "G4: auto falls back to agy without any Gemini key"
 
 # G5. auto + GEMINI_API_KEY set + gemini-cli DIES (FAKE_GEMINI_FAIL=1) + agy present
 #     → the run falls back to agy ONCE, exits 0, and the fallback is LOUD.
