@@ -155,13 +155,43 @@ diff_worktree() {
   diff "$before" "$after"
 }
 
-# Helper: run a command with optional timeout
+# Helper: run a command with timeout enforcement.
+# gtimeout/timeout are not guaranteed on macOS (stock macOS has neither).
+# When absent, fall back to a pure-bash watchdog: background the command,
+# TERM it after $TIMEOUT_SECS (KILL 5s later), report exit 124 like timeout(1).
+# Known limitation: the watchdog TERMs the direct child only; `script` and
+# `codex` both propagate death to their process trees (pty HUP / child reap).
 run_with_timeout() {
   if [[ -n "$TIMEOUT_CMD" ]]; then
     "$TIMEOUT_CMD" "$TIMEOUT_SECS" "$@"
-  else
-    "$@"
+    return $?
   fi
+  # `0<&0` explicitly dups the inherited stdin onto the async command. Without
+  # it, bash redirects a backgrounded command's stdin from /dev/null "in the
+  # absence of any explicit redirections" — which would starve `codex -` of the
+  # prompt fed via `run_with_timeout codex ... < "$PROMPT_FILE_FINAL"`.
+  "$@" 0<&0 &
+  local cmd_pid=$!
+  (
+    sleep "$TIMEOUT_SECS" || exit 0
+    kill -TERM "$cmd_pid" 2>/dev/null || true
+    sleep 5
+    kill -KILL "$cmd_pid" 2>/dev/null || true
+  ) &
+  local watchdog_pid=$!
+  local status=0
+  wait "$cmd_pid" || status=$?
+  if kill -0 "$watchdog_pid" 2>/dev/null; then
+    # Command finished first — retire the watchdog (its pending sleep exits harmlessly).
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+  else
+    # Watchdog already fired: normalize TERM/KILL deaths to timeout(1)'s 124.
+    if [[ "$status" -eq 143 || "$status" -eq 137 ]]; then
+      status=124
+    fi
+  fi
+  return "$status"
 }
 
 # Helper: run agy under a deny-write sandbox profile (macOS sandbox-exec).
@@ -260,7 +290,10 @@ if [[ -s "$NVM_DIR/nvm.sh" ]]; then
   # Ensure the default node version's bin is in PATH
   NODE_BIN="$(nvm which default 2>/dev/null | xargs dirname 2>/dev/null)" || true
   if [[ -n "$NODE_BIN" && -d "$NODE_BIN" ]]; then
-    export PATH="$NODE_BIN:$PATH"
+    # Append (not prepend): make npm-global CLIs findable as a fallback WITHOUT
+    # shadowing a codex/agy the caller deliberately placed earlier in PATH
+    # (e.g. a test fake). Prepending here silently overrode the caller's PATH.
+    export PATH="$PATH:$NODE_BIN"
   fi
 fi
 
@@ -269,16 +302,22 @@ WORK_DIR="${2:-.}"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
 CODEX_MODEL="${CODEX_MODEL:-}"
-GEMINI_MODEL="${GEMINI_MODEL:-}"
-TIMEOUT_SECS="${COUNCIL_TIMEOUT:-300}"
-GEMINI_MAX_TURNS="${GEMINI_MAX_TURNS:-100}"
+COUNCIL_CODEX_EFFORT="${COUNCIL_CODEX_EFFORT:-xhigh}"
+TIMEOUT_SECS="${COUNCIL_TIMEOUT:-600}"
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-8m}"
+COUNCIL_GEMINI_BACKEND="${COUNCIL_GEMINI_BACKEND:-auto}"
+COUNCIL_GEMINI_MODEL="${COUNCIL_GEMINI_MODEL:-}"
+# GEMINI_MODEL / GEMINI_MAX_TURNS are retained here (not in the v1.4.0 defaults
+# block above) because the Gemini lane rewrite lands in a later task; the
+# current agy lane still references both, so removing them now breaks set -u.
+GEMINI_MODEL="${GEMINI_MODEL:-}"
+GEMINI_MAX_TURNS="${GEMINI_MAX_TURNS:-100}"
 
 # Resolve display names for models (show user what's actually being used)
 if [[ -n "$CODEX_MODEL" ]]; then
   CODEX_MODEL_DISPLAY="$CODEX_MODEL"
 else
-  CODEX_MODEL_DISPLAY="$(grep '^model' "${HOME}/.codex/config.toml" 2>/dev/null | head -1 | sed 's/model *= *"\(.*\)"/\1/')"
+  CODEX_MODEL_DISPLAY="$(grep -E '^model[[:space:]]*=' "${HOME}/.codex/config.toml" 2>/dev/null | head -1 | sed 's/model *= *"\(.*\)"/\1/')"
   CODEX_MODEL_DISPLAY="${CODEX_MODEL_DISPLAY:-unknown}"
 fi
 if [[ -n "$GEMINI_MODEL" ]]; then
@@ -329,6 +368,13 @@ fi
 TMPDIR_COUNCIL="${WORK_DIR}/.council-tmp/council_${DIR_LABEL}_${TIMESTAMP}"
 mkdir -p "$TMPDIR_COUNCIL"
 
+# Final composed prompt lives in a file; both lanes feed it via file I/O,
+# never argv (ARG_MAX) and never an open pipe (codex stdin-hang #27019).
+# $PROMPT is fully composed above (prompt file + optional --context-file append)
+# before this point, so the file captures the complete final prompt.
+PROMPT_FILE_FINAL="$TMPDIR_COUNCIL/prompt_final.txt"
+printf '%s' "$PROMPT" > "$PROMPT_FILE_FINAL"
+
 CODEX_OUT="$TMPDIR_COUNCIL/codex_response.md"
 GEMINI_OUT="$TMPDIR_COUNCIL/gemini_response.md"
 CODEX_ERR="$TMPDIR_COUNCIL/codex_error.log"
@@ -356,11 +402,12 @@ AGY_VERSION_DISPLAY=""
 
 echo "Invoking The Council ($MODE)..."
 [[ "$RUN_CODEX" == "true" ]] && echo "  Codex model:  $CODEX_MODEL_DISPLAY"
+[[ "$RUN_CODEX" == "true" ]] && echo "  Codex effort: ${COUNCIL_CODEX_EFFORT} (COUNCIL_CODEX_EFFORT)"
 [[ "$RUN_CODEX" == "true" ]] && echo "  Codex CLI:    ${CODEX_VERSION_DISPLAY:-unknown}"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model: $GEMINI_MODEL_DISPLAY"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  agy CLI:      ${AGY_VERSION_DISPLAY:-unknown}"
 echo "  Working dir:  $WORK_DIR"
-echo "  Timeout:      ${TIMEOUT_SECS}s (${TIMEOUT_CMD:-none})"
+echo "  Timeout:      ${TIMEOUT_SECS}s ($([[ -n "$TIMEOUT_CMD" ]] && echo "$TIMEOUT_CMD" || echo "bash watchdog"))"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini turns: ${GEMINI_MAX_TURNS} (GEMINI_MAX_TURNS)"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Agy timeout:  ${AGY_PRINT_TIMEOUT} (AGY_PRINT_TIMEOUT)"
 if [[ "$RUN_GEMINI" == "true" ]]; then
@@ -375,20 +422,35 @@ echo ""
 CODEX_PID=""
 GEMINI_PID=""
 
-# --- Invoke Codex (non-interactive, read-only sandbox) ---
+# --- Invoke Codex (non-interactive, read-only, never-approve) ---
+# Prompt via stdin-from-file (`-`): kills ARG_MAX (E2BIG) on large diffs AND
+# the codex-exec stdin-hang (openai/codex #27019) — stdin gets EOF at file end.
+# --full-auto removed: deprecated hidden alias (workspace-write + on-failure
+# approval) that contradicted --sandbox read-only and could pause headless runs.
 if [[ "$RUN_CODEX" == "true" ]]; then
   (
     cd "$WORK_DIR"
-    CODEX_ARGS=(exec --full-auto --sandbox read-only -o "$CODEX_OUT")
+    CODEX_ARGS=(exec --sandbox read-only -c approval_policy=never -o "$CODEX_OUT")
     if [[ -n "$CODEX_MODEL" ]]; then
       CODEX_ARGS+=(-m "$CODEX_MODEL")
     fi
-    CODEX_ARGS+=("$PROMPT")
+    # Reasoning effort: explicit by default (config.toml ships "medium" which
+    # silently under-powers reviews). COUNCIL_CODEX_EFFORT=config defers to config.
+    if [[ "$COUNCIL_CODEX_EFFORT" != "config" ]]; then
+      CODEX_ARGS+=(-c "model_reasoning_effort=${COUNCIL_CODEX_EFFORT}")
+    fi
+    CODEX_ARGS+=(-)
     run_with_timeout codex "${CODEX_ARGS[@]}" \
+      < "$PROMPT_FILE_FINAL" \
       2>"$CODEX_ERR" || {
         STATUS=$?
-        echo "Codex invocation failed (exit $STATUS). See $CODEX_ERR" >&2
-        echo "[Codex failed to respond. Check $CODEX_ERR for details.]" > "$CODEX_OUT"
+        if [[ "$STATUS" -eq 124 ]]; then
+          echo "Codex timed out after ${TIMEOUT_SECS}s (COUNCIL_TIMEOUT). See $CODEX_ERR" >&2
+          echo "[COUNCIL-ADVISOR-FAILURE] Codex timed out (COUNCIL_TIMEOUT=${TIMEOUT_SECS}s). Raise COUNCIL_TIMEOUT for xhigh/large-diff reviews." > "$CODEX_OUT"
+        else
+          echo "Codex invocation failed (exit $STATUS). See $CODEX_ERR" >&2
+          echo "[COUNCIL-ADVISOR-FAILURE] Codex failed to respond (exit $STATUS). See $CODEX_ERR." > "$CODEX_OUT"
+        fi
         exit "$STATUS"
       }
   ) &
