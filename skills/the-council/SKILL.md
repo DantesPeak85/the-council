@@ -60,14 +60,14 @@ backend automatically (`COUNCIL_GEMINI_BACKEND=auto`):
 | false | any | `agy` (pty-wrapped, sandboxed, single-shot) |
 
 Note: gemini-cli's free oauth-personal auth stopped serving 2026-06-18 — the
-gemini backend requires a paid `GEMINI_API_KEY` (AI Studio) exported in the
-environment.
+gemini backend requires a paid Gemini API key (`GEMINI_API_KEY` or
+`GOOGLE_API_KEY`, AI Studio) exported in the environment.
 
 **Preflight-vs-invoke caveat:** preflight counts `~/.gemini/oauth_creds.json` as
 Gemini credentials, but the invoke script's `auto` mode only selects gemini-cli
-when `GEMINI_API_KEY` is set — a machine with only stale oauth creds and no
-`agy` installed will preflight green but fail loud at invoke (the resolved
-backend `agy` is not in PATH).
+when `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set — a machine with only stale
+oauth creds and no `agy` installed will preflight green but fail loud at invoke
+(the resolved backend `agy` is not in PATH).
 
 **If no advisors are available**, display this help and stop:
 
@@ -116,11 +116,11 @@ Select the appropriate template from [references/prompt-templates.md](references
 
 Write the composed prompt to a temporary file. Include all relevant context inline (diffs, error messages, plan text) — the advisors cannot read Claude's conversation history.
 
-**Context in prompts:** Both advisors have read-only filesystem access to the working directory (Codex via its native `--sandbox read-only`; Gemini via `agy` wrapped in `sandbox-exec` on macOS — see Permissions and Safety). However, task-specific context (diffs, error messages, plan text, conversation history) must still be inlined because advisors cannot access Claude's conversation or external paths like `~/.claude/plans/`.
+**Context in prompts:** Only Codex has read-only filesystem access to the working directory (via its native `--sandbox read-only`). Gemini reviews INLINED content only — its workspace holds just the review request, whichever backend runs (see Permissions and Safety). Task-specific context (diffs, error messages, plan text, conversation history) must always be inlined because advisors cannot access Claude's conversation or external paths like `~/.claude/plans/`.
 
-- **Always inline:** diffs, error output, plan text, conversation excerpts, and any content from outside the project directory
-- **Can reference by path:** codebase files that advisors can read directly (e.g., "see `src/config.ts` for the current implementation")
-- For code review: the diff must be inlined (advisors don't have access to git staging), but surrounding context files can be referenced by path
+- **Always inline:** diffs, error output, plan text, conversation excerpts, and any content from outside the project directory — plus everything Gemini needs, since it sees only the inlined request
+- **Can reference by path (Codex only):** codebase files that Codex can read directly (e.g., "see `src/config.ts` for the current implementation")
+- For code review: the diff must be inlined (advisors don't have access to git staging), but surrounding context files can be referenced by path for Codex
 - For large files referenced in the prompt: include the most relevant sections inline, note the file path for full context
 
 #### Mandatory prompt blocks

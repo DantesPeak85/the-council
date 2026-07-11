@@ -69,11 +69,11 @@ Replace `{advisor_context_instruction}` with the appropriate line:
 **Codex** (has filesystem access via read-only sandbox):
 > Project context: You have access to the full codebase via your tools. Reference specific files and line numbers.
 
-**Gemini** (has filesystem access via read-only tools):
-> Project context: You have read-only access to the codebase. Your available tools are: view_file, list_dir, grep_search. No other tools are available — do not attempt run_command or write tools. Use your read tools to explore relevant files. The diff/plan/question below is the primary input — use file access to verify details and trace dependencies.
+**Gemini** (reviews inlined content only — no repo access):
+> Project context: Everything you need is inlined in this request. You have NO access to the project repository — do not attempt to read, list, or search files. Reason from the provided content only. The diff/plan/question below is your complete input.
 > 
 > **Important Rules:**
-> 1. **No Hallucinated Blockers**: Only raise blockers, errors, or issues that directly reference files present in the provided diff or codebase. You must verify all structural claims or file existence using your read tools (view_file, list_dir, grep_search) to search the workspace. Do not assume file structure or contents from context alone, and do not raise phantom blockers based on mock/test files.
+> 1. **No Hallucinated Blockers**: Only raise blockers, errors, or issues grounded in the content provided in this request. Do not assert claims about files, structure, or code you cannot see — state file-dependent concerns as assumptions for the executor to verify, not as confirmed findings.
 > 2. **Documentation Revisions**: Documentation files (e.g., inside Docs/, brand/, or spec/ directories) are fully revisable. Do not treat them as inviolable charters or block changes to them; Tom revisions these documents regularly as part of development.
 
 ## Code Review

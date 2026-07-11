@@ -48,7 +48,7 @@ codex auth
 The Council picks the Gemini backend automatically (`COUNCIL_GEMINI_BACKEND=auto`):
 
 - **Antigravity CLI (`agy`)** — the **default** backend. Install Google's Antigravity client; it authenticates via `~/.gemini/oauth_creds.json` on first run. Runs pty-wrapped, sandboxed, single-shot.
-- **`gemini` CLI (optional, preferred when available)** — the single-shot JSON backend. Selected automatically **only** when the `gemini` binary is on `PATH` **and** a paid `GEMINI_API_KEY` (AI Studio) is exported. gemini-cli's free oauth-personal auth stopped serving 2026-06-18, so this backend requires the paid key.
+- **`gemini` CLI (optional, preferred when available)** — the single-shot JSON backend. Selected automatically **only** when the `gemini` binary is on `PATH` **and** a paid Gemini API key — `GEMINI_API_KEY` or `GOOGLE_API_KEY` (AI Studio) — is exported. gemini-cli's free oauth-personal auth stopped serving 2026-06-18, so this backend requires the paid key.
 
 ### System dependencies (macOS)
 
