@@ -4,6 +4,8 @@
 #   S2. No pre-existing AGENTS.md → --restore removes the council-written file
 #   S3. Double-sync idempotency → --restore returns the ORIGINAL user content,
 #       never the council-written content (the stale-backup collision guard).
+#   S4. Stale sentinel from a dead session → a user-authored AGENTS.md written
+#       AFTER the death must NOT be deleted by a later sync or --restore.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -50,6 +52,26 @@ grep -q "My CLAUDE rules" "$P/AGENTS.md" && fail "S3: restore returned council c
 bash "$SYNC" --restore "$P" || fail "S3: second --restore did not exit 0"
 grep -q "USER OWNED AGENTS FILE" "$P/AGENTS.md" || fail "S3: second --restore disturbed the restored original"
 pass "S3: double-sync then --restore returns ORIGINAL user content (idempotent)"
+
+# S4 — sentinel-staleness guard against user content authored AFTER a session
+# died. Sequence: no-original sync (touches sentinel, writes council AGENTS.md)
+# → simulate session death (NO --restore, sentinel + council file left on disk)
+# → the user authors their OWN AGENTS.md over it → sync again → --restore. The
+# user's content must survive (as AGENTS.md, or restored from the backup). Old
+# behavior deleted it: stale sentinel + no backup ⇒ blind `rm -f AGENTS.md`.
+rm -f "$P/AGENTS.md"; rm -rf "$P/.council-tmp"
+bash "$SYNC" "$P" >/dev/null                        # no-original sync
+[[ -f "$P/.council-tmp/AGENTS.md.council-written" ]] || fail "S4: sentinel not written on no-original sync"
+grep -q "My CLAUDE rules" "$P/AGENTS.md" || fail "S4: sync did not write council content"
+# Session death simulation: leave the sentinel + council AGENTS.md in place
+# (no --restore), then the user overwrites AGENTS.md with their own file.
+echo "# MY OWN AGENTS FILE authored after a dead council session" > "$P/AGENTS.md"
+bash "$SYNC" "$P" >/dev/null                        # sync again over stale sentinel
+grep -q "My CLAUDE rules" "$P/AGENTS.md" || fail "S4: sync #2 did not write council content"
+bash "$SYNC" --restore "$P" >/dev/null
+grep -q "MY OWN AGENTS FILE" "$P/AGENTS.md" \
+  || fail "S4: user-authored AGENTS.md was destroyed by stale-sentinel sync/restore"
+pass "S4: user content authored after a dead session survives sync + --restore"
 
 echo ""
 echo "ALL SYNC TESTS PASSED"

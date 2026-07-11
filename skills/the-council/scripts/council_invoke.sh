@@ -270,7 +270,7 @@ invoke_gemini_agy() {
   # Placed AFTER the empty-retry so a retry gets its chance; it gates the
   # retry's output too. ${VERDICT_LINE:?} fails loudly if the constant is
   # unset — an empty regex matches everything and would silently disarm this.
-  if [[ -s "$GEMINI_OUT" ]] && ! head -40 "$GEMINI_OUT" | grep -Eq "${VERDICT_LINE:?}"; then
+  if [[ -s "$GEMINI_OUT" ]] && ! head -n "$VERDICT_HEAD_LINES" "$GEMINI_OUT" | grep -Eiq "${VERDICT_LINE:?}"; then
     cp "$GEMINI_OUT" "$TMPDIR_COUNCIL/gemini_derailed.txt"
     echo "Gemini (agy) derailed — no VERDICT line; original preserved to gemini_derailed.txt" >&2
     echo "[COUNCIL-ADVISOR-FAILURE] Gemini (agy) derailed — response has no VERDICT line (agy print-mode task-focus bug; see gemini_derailed.txt). Known agy 1.1.1 issue — consider COUNCIL_GEMINI_BACKEND=gemini with a GEMINI_API_KEY." > "$GEMINI_OUT"
@@ -451,7 +451,11 @@ invoke_gemini_backend() {
 FAILURE_PLACEHOLDER_PREFIX='^\[COUNCIL-ADVISOR-FAILURE\]'
 # Verdict must be a NORMALIZED LINE near the top (driver prompts demand it) —
 # unanchored tokens like a quoted "APPROVE" deep in text do not count (R1).
+# Case-insensitive at every grep use-site (-i) — a `verdict:` in any case counts.
 VERDICT_LINE='^[[:space:]]*(\**)?VERDICT(\**)?:'
+# ONE verdict-detection window shared by the agy derail gate AND all three
+# validate_response sites — was 40-vs-20 drift before the hoist (final review).
+VERDICT_HEAD_LINES=40
 REFUSAL_PATTERNS='I cannot assist|I can.t help with|I am unable to help|I will not provide|declining this request|unable to comply'
 STDERR_WARNING_PATTERNS='RESOURCE_EXHAUSTED|rate limit|429|Maximum session turns exceeded|Loop detected, stopping execution|context length'
 
@@ -467,7 +471,9 @@ validate_response() {
     VALIDATE_REASON="empty response"
     return 1
   fi
-  if grep -Eq "$FAILURE_PLACEHOLDER_PREFIX" "$out_file"; then
+  # Anchor to line 1 ONLY — a review that QUOTES the placeholder string at line
+  # start (e.g. discussing this very code) must not false-fail (final review).
+  if head -1 "$out_file" | grep -Eq "$FAILURE_PLACEHOLDER_PREFIX"; then
     VALIDATE_REASON="placeholder ($(head -1 "$out_file" | cut -c1-120))"
     return 1
   fi
@@ -480,7 +486,7 @@ validate_response() {
     # normalized verdict line in its head DESPITE a nonzero exit (e.g. the
     # advisor finished writing, then its CLI died on teardown) — but downgrade
     # loudly via the warning file, never silently.
-    if head -20 "$out_file" | grep -Eq "$VERDICT_LINE"; then
+    if head -n "$VERDICT_HEAD_LINES" "$out_file" | grep -Eiq "$VERDICT_LINE"; then
       {
         echo "ADVISORY: $advisor exited $exit_status but the response carries a verdict line."
         echo "Treating as PARTIAL SUCCESS — verify the response is complete before relying on it."
@@ -499,7 +505,7 @@ validate_response() {
   #    verdict line in the head = refusal. (A verdict line beats a refusal
   #    phrase only when the refusal phrase is NOT in the first 400 bytes.)
   if head -c 400 "$out_file" | grep -Eiq "$REFUSAL_PATTERNS"; then
-    if ! head -20 "$out_file" | grep -Eq "$VERDICT_LINE"; then
+    if ! head -n "$VERDICT_HEAD_LINES" "$out_file" | grep -Eiq "$VERDICT_LINE"; then
       VALIDATE_REASON="refusal"
       return 1
     fi
@@ -507,7 +513,7 @@ validate_response() {
 
   # 3. Non-engagement: large prompt + short response + no verdict line.
   if [[ "$prompt_bytes" -gt 2048 && "$response_size" -lt 200 ]]; then
-    if ! head -20 "$out_file" | grep -Eq "$VERDICT_LINE"; then
+    if ! head -n "$VERDICT_HEAD_LINES" "$out_file" | grep -Eiq "$VERDICT_LINE"; then
       VALIDATE_REASON="non-engagement: ${response_size}-char verdict-less response on ${prompt_bytes}-byte prompt"
       return 1
     fi

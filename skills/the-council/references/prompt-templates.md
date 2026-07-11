@@ -81,13 +81,16 @@ Replace `{advisor_context_instruction}` with the appropriate line:
 *Prepend: defensive framing (always); no-explore for large/multi-file diffs; doc-provenance if it cites owner-revisable docs; nitpick suppression when the Codex model is Sol-family.*
 
 ```
+Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
+
 You are an expert code reviewer. Analyze the following changes and provide:
 
 1. **Correctness**: Bugs, logic errors, edge cases
 2. **Security**: Vulnerabilities (injection, auth, data leaks)
 3. **Performance**: Inefficiencies, N+1 queries, memory issues
 4. **Maintainability**: Readability, naming, separation of concerns
-5. **Verdict**: APPROVE, REQUEST_CHANGES, or NEEDS_DISCUSSION
+
+Then, after the analysis, close by restating your verdict with a one-line reason.
 
 Changes to review:
 ---
@@ -103,6 +106,8 @@ Be specific — reference file names and line numbers.
 *Prepend: defensive framing (always); no-explore directive (plan reviews are fully inline); doc-provenance if the plan cites owner-revisable docs; nitpick suppression when the Codex model is Sol-family.*
 
 ```
+Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
+
 You are a senior software architect. Evaluate this implementation plan:
 
 Plan:
@@ -115,10 +120,10 @@ Analyze:
 2. **Risks**: What could go wrong? What's underestimated?
 3. **Alternatives**: Are there better approaches? Trade-offs?
 4. **Dependencies**: Missing dependencies or ordering issues?
-5. **Recommendation**: Proceed as-is, modify (specify how), or rethink
+5. **Recommendation**: Expand on your verdict — if not APPROVE, specify exactly what to change.
 
 {advisor_context_instruction}
-Ground your analysis in the actual codebase, not hypotheticals.
+Codex: ground your analysis in the actual codebase; Gemini: ground it in the inlined content provided.
 ```
 
 ## Debugging
@@ -126,6 +131,8 @@ Ground your analysis in the actual codebase, not hypotheticals.
 *Prepend: defensive framing (always); no-explore if the prompt references many files; doc-provenance if it cites owner-revisable docs; nitpick suppression when the Codex model is Sol-family.*
 
 ```
+Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
+
 You are a debugging specialist. Help diagnose this issue:
 
 Symptoms:
@@ -153,6 +160,8 @@ Reference specific files and functions.
 *Prepend: defensive framing (always); no-explore if referencing many files; doc-provenance if it cites owner-revisable docs; nitpick suppression when the Codex model is Sol-family.*
 
 ```
+Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
+
 You are a senior engineering advisor. Consider this question:
 
 ---
