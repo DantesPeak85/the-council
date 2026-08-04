@@ -86,6 +86,37 @@ Council running in Codex-only mode (Gemini CLI not found).
 
 The preflight result is cached for 2 hours — subsequent invocations skip this step automatically.
 
+### 0.5. Select the Panel (MANDATORY — before composing the prompt)
+
+Read [references/reviewer-selection.md](references/reviewer-selection.md) and pick the panel by
+**consequence**, not by diff size:
+
+| Tier | What it covers | Panel |
+|---|---|---|
+| **Routine** | ordinary diffs, bug fixes, refactors | **Fable (low)** + **Codex** |
+| **Hard-to-reverse** | architecture, migrations, auth/RLS/PHI, wire contracts, any written plan | **Fable (low)** + **Codex** + **Gemini** |
+| **Milestone** | launch-gating work, initiative plans, anything an executor will build from | the above **+ Qwen**; **Fable (high)** at merge |
+
+Four decisions this step makes, all load-bearing:
+
+1. **Fable runs alongside Council, not instead of it.** The advisors reason about the text they are
+   handed; Fable re-executes the claims and is the only reviewer that catches *our own* false
+   statements. Low by default — its work is mechanical, and effort does not make a grep more true.
+   Reserve **high** for the merge of a stage that ships a fix, where the question becomes "does this
+   close the class, or only the named trigger?"
+2. **The Codex seat is `gpt-5.6-sol`.** On native failure the OpenRouter fallback is
+   `openai/gpt-5.6-sol` — never a lesser variant. In the source session `gpt-5.3-codex` returned
+   REVISE and `gpt-5.6-sol` returned RESTRUCTURE on the *identical prompt*, with three critical
+   findings no other reviewer produced. **Model choice changed the verdict.** Never resolve a model
+   id from a truncated listing — list the full family and grep it.
+3. **Qwen (`qwen/qwen3.8-max`, milestone tier) needs `max_tokens` ≥ 32000.** At 9k it spent every
+   completion token on reasoning and returned empty content — `finish_reason: MAX_TOKENS`.
+4. **Isolated workspace when the repo is busy.** If another session or process is writing to the
+   target repo — or the review is of a document rather than a diff — run Council in a scratch
+   workspace with `CLAUDE.md` copied in. The safety net hashes the whole tree and fails closed on any
+   change, so a busy repo guarantees a false-trip; and the sync itself writes `AGENTS.md` into a repo
+   you may have been asked not to touch. Recipe in reviewer-selection.md §6.
+
 ### 1. Sync Project Context
 
 Run the sync script to copy CLAUDE.md content into AGENTS.md (for Codex):
@@ -391,6 +422,23 @@ Present the single advisor's response with your own assessment.
   round and all residuals trace to one structural fact, stop patching and
   take the robust option the reviewer already named (2026-06-24 lesson).
 
+#### The stopping rule (MANDATORY — three rounds is a ceiling, not a floor)
+
+**After each round, state the root cause of the residual in one sentence. If that
+sentence is the same as the previous round's, the next action is a DECISION, not
+another review round.**
+
+A 2026-08-04 launch-plan review ran three rounds and returned three
+RESTRUCTURE/REVISE verdicts while the residual never moved — the same root fact
+each time, wearing new vocabulary. The conclusion finally adopted was available
+at round one; rounds two and three confirmed it at real cost in time and scope.
+
+This is the operational form of the repeated-residuals rule above and of the
+standing lesson that Council ratchets guards and never releases them — "is this
+safe?" has no failing state toward too-quiet. Without a stopping rule, a
+multi-advisor panel becomes a scope-inflation engine at exactly the moment you
+need to ship. See references/reviewer-selection.md §5.
+
 #### Verifying advisor claims
 
 Gemini findings that name specific code patterns MUST be verified with one
@@ -457,6 +505,35 @@ Either (a) an advisor sandbox escape (rare — investigate as a real security is
 - Both advisors review INLINED content; only Codex additionally has
   read-only filesystem access to the working directory.
 
+### Fallback and extra seats via OpenRouter
+
+Used when the Codex CLI fails (rate limit / quota — read the error log, never
+guess) and for the milestone-tier Qwen seat. Full detail in
+[references/reviewer-selection.md](references/reviewer-selection.md) §2, §3, §7.
+
+| Seat | Model id | Notes |
+|---|---|---|
+| Codex fallback | **`openai/gpt-5.6-sol`** | Never a lesser variant. 5.3-codex → REVISE vs 5.6-sol → RESTRUCTURE on an identical prompt, 2026-08-04. |
+| Qwen (milestone) | **`qwen/qwen3.8-max`** | `max_tokens` ≥ **32000**, plus a system-prompt line telling it to keep internal reasoning short. |
+
+Operational notes that cost a session to learn:
+
+- **Never resolve a model id from a truncated listing.** List the whole
+  `openai/` or `qwen/` family and grep it. A `head -20` cut the 5.6 family off
+  the list and produced the weaker review above.
+- A `403 "Key limit exceeded (total limit)"` is a **per-key spend cap**, not an
+  account balance — adding credit changes nothing. Raise the limit on the key
+  itself at the URL in the error body. Inspect with `GET /api/v1/key`
+  (`usage` / `limit` / `limit_remaining`).
+- Long reviews exceed a 2-minute foreground tool timeout: launch the `curl`
+  **detached** (`nohup … & disown`) and poll the response file, exactly as §3a
+  does for the advisors. The file is written progressively, so confirm the
+  writer exited before parsing — a mid-write `json.load` fails with
+  "Expecting value".
+- Always report the `usage` block: `cost` and
+  `completion_tokens_details.reasoning_tokens`. **High reasoning tokens with
+  empty content is budget starvation, not a refusal** — raise `max_tokens`.
+
 ## Error Handling
 
 See **Section 3c** above for detailed failure diagnostics. Never guess error
@@ -494,10 +571,18 @@ Generalize these learnings into `CLAUDE.md` and `AGENTS.md` so future agents sta
 ```
 ## Council Learning — [date]
 - **Insight:** [what the council revealed]
-- **Caught by:** Codex / Gemini / both
+- **Caught by:** Codex / Gemini / Qwen / Fable / several
 - **Root cause:** [why this was missed]
 - **Lesson:** [concrete rule or pattern for future sessions]
 ```
+
+**Also record which SEAT caught it.** Panel composition is a live decision (§0.5),
+and it should be tuned by evidence rather than habit. If one seat repeatedly
+produces nothing the others missed, drop it from that tier; if a tier keeps
+missing a class of defect, add the lens that would have caught it. The seat
+attribution table in
+[references/reviewer-selection.md](references/reviewer-selection.md) §1 is the
+running record — update it when a session materially changes the picture.
 
 This closes the feedback loop: the council exposes blind spots → learnings become permanent project memory → future sessions start smarter.
 
