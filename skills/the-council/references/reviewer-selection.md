@@ -97,6 +97,34 @@ Do **not** run high on investigations or plans that merely describe work; low is
 there. Budget roughly **one high pass per shipped stage, at merge** — not one per document. High is
 expensive even on a Max x20 plan.
 
+### High must delegate the gathering — it is for judgment, not lookup
+
+Measured on the source session's high pass: **~25 claims verified, 24 of which needed a shell
+command and exactly one needed reasoning** — and that one produced the entire unique value (a plan
+fixing four call sites where it should have fixed the shared wrapper). Running all 25 at high effort
+paid a premium 24 times for work a `grep` does better.
+
+Run high as three tiers, and never let a higher tier do a lower tier's work:
+
+| Tier | Does | Runs on |
+|---|---|---|
+| **T1 — no model** | anything with a deterministic command: counts, `file:line` existence, `git log`/`diff` drift, re-running a test, query or build | plain shell in the main session |
+| **T2 — cheap delegate** | claim extraction + per-claim verification where a command must be composed; returns *claim → command run → raw output* | subagent on the cheapest capable model at **low** effort |
+| **T3 — high, main session** | only the residue: claims that **cannot** be re-run, and the class-closure question — *"does this fix close the class, or only the named trigger?"* | main session, high effort |
+
+**Four rules that make the tiering real:**
+
+1. **If the high-effort pass is reading files to discover what a claim says, the delegation failed.**
+   T3 should receive a finished evidence table and spend its budget on judgment alone.
+2. **T2 returns raw command output, never a summary or a verdict.** A cheap verifier's report is
+   itself a claim — summarising at T2 moves the over-claim problem down a tier and hides it behind a
+   smaller model. This is the same discipline the judge applies to everyone else; it applies to its
+   own delegates.
+3. **Skip T3 entirely** when T1+T2 return zero discrepancies **and** the deliverable ships no fix.
+   With no fix there is no class to close, so there is nothing high effort can contribute.
+4. **One high pass per shipped stage.** Wanting a second is a signal the first was scoped wrong, not
+   that more effort is required.
+
 ### What Fable cannot do, at any effort
 It verifies claims that were **made**. It cannot audit what was **omitted**, and it cannot reason
 about what **would happen**. Both categories were the majority of serious findings in the source
@@ -168,6 +196,9 @@ Hard-to-reverse    → Fable(low) + Codex(gpt-5.6-sol) + Gemini
 Milestone / plan   → Fable(low) + Codex(gpt-5.6-sol) + Gemini + Qwen(qwen3.8-max, 32k tokens)
 At merge of a stage that ships a fix → add Fable(high)
 
+Fable HIGH tiering  → T1 shell (no model) · T2 cheap delegate, low effort, RAW output
+                      · T3 high, main session, judgment only
+                      skip T3 if T1+T2 clean AND no fix shipped
 Codex native fails → OpenRouter openai/gpt-5.6-sol   (never a lesser variant)
 Repo busy          → isolated scratch workspace
 Same root cause 2 rounds running → stop; decide
