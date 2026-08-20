@@ -613,7 +613,10 @@ WORK_DIR="${2:-.}"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
 CODEX_MODEL="${CODEX_MODEL:-}"
-COUNCIL_CODEX_EFFORT="${COUNCIL_CODEX_EFFORT:-xhigh}"
+# Tom 2026-08-20: effort follows the review tier (medium routine / high
+# hard-to-reverse / xhigh milestone) — caller escalates via COUNCIL_CODEX_EFFORT.
+# Blanket xhigh burned native quota + OpenRouter spend on routine diffs.
+COUNCIL_CODEX_EFFORT="${COUNCIL_CODEX_EFFORT:-medium}"
 TIMEOUT_SECS="${COUNCIL_TIMEOUT:-600}"
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-8m}"
 COUNCIL_GEMINI_BACKEND="${COUNCIL_GEMINI_BACKEND:-auto}"

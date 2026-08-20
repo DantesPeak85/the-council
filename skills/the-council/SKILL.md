@@ -272,7 +272,7 @@ bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
 
 **Environment overrides:**
 - `CODEX_MODEL` — default: from `~/.codex/config.toml` (standard: gpt-5.6-sol)
-- `COUNCIL_CODEX_EFFORT` — default: `xhigh`; set `config` to defer to config.toml
+- `COUNCIL_CODEX_EFFORT` — default: `medium`. **Effort follows the review tier (Tom 2026-08-20): `medium` routine / `high` hard-to-reverse / `xhigh` milestone-only.** Set explicitly per invocation when the tier calls for more; `config` defers to config.toml. Blanket xhigh is retired — it burned native quota + OpenRouter spend on routine diffs.
 - `COUNCIL_TIMEOUT` — default: `600` (seconds per advisor; raise to 900 for very large xhigh reviews)
 - `COUNCIL_GEMINI_BACKEND` — default: `auto` (`gemini` | `agy`)
 - `COUNCIL_GEMINI_MODEL` — optional model pin for either backend
@@ -495,7 +495,7 @@ Either (a) an advisor sandbox escape (rare — investigate as a real security is
 
 - **Codex**: model from `~/.codex/config.toml` (standard: `gpt-5.6-sol`,
   1.05M context), overridable via `CODEX_MODEL`. Reasoning effort is set
-  EXPLICITLY by the script: `-c model_reasoning_effort=xhigh` by default
+  EXPLICITLY by the script: `-c model_reasoning_effort=medium` by default
   (`COUNCIL_CODEX_EFFORT` to change). Sol note: highest review recall of any
   current model, but over-flags nitpicks — the prompt templates include a
   suppression instruction.
