@@ -54,9 +54,9 @@ Everything else in the doc is open to revision.
 Without this, Council issues strict text-literal REVISE verdicts the owner
 then overrules (2026-05-13 charter-as-decree incident).
 
-### 4. Nitpick suppression (Sol-family Codex models, e.g. gpt-5.6-sol)
+### 4. Nitpick suppression (every Codex model — measured on gpt-5.6-sol, kept on for gpt-6-astra)
 
-Sol over-flags (CodeRabbit benchmark: 31.6% actionable precision). Instruct:
+Sol over-flagged (CodeRabbit benchmark: 31.6% actionable precision); Astra is unmeasured, so keep it on. Instruct:
 
 ```text
 Rank findings by severity. Suppress low-confidence nitpicks; report only findings you would defend in review.
@@ -78,7 +78,7 @@ Replace `{advisor_context_instruction}` with the appropriate line:
 
 ## Code Review
 
-*Prepend: defensive framing (always); no-explore for large/multi-file diffs; doc-provenance if it cites owner-revisable docs; nitpick suppression when the Codex model is Sol-family.*
+*Prepend: defensive framing (always); no-explore for large/multi-file diffs; doc-provenance if it cites owner-revisable docs; nitpick suppression (always).*
 
 ```
 Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
@@ -103,7 +103,7 @@ Be specific — reference file names and line numbers.
 
 ## Architecture / Planning
 
-*Prepend: defensive framing (always); no-explore directive (plan reviews are fully inline); doc-provenance if the plan cites owner-revisable docs; nitpick suppression when the Codex model is Sol-family.*
+*Prepend: defensive framing (always); no-explore directive (plan reviews are fully inline); doc-provenance if the plan cites owner-revisable docs; nitpick suppression (always).*
 
 ```
 Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
@@ -128,7 +128,7 @@ Codex: ground your analysis in the actual codebase; Gemini: ground it in the inl
 
 ## Debugging
 
-*Prepend: defensive framing (always); no-explore if the prompt references many files; doc-provenance if it cites owner-revisable docs; nitpick suppression when the Codex model is Sol-family.*
+*Prepend: defensive framing (always); no-explore if the prompt references many files; doc-provenance if it cites owner-revisable docs; nitpick suppression (always).*
 
 ```
 Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
@@ -157,7 +157,7 @@ Reference specific files and functions.
 
 ## General Advisory
 
-*Prepend: defensive framing (always); no-explore if referencing many files; doc-provenance if it cites owner-revisable docs; nitpick suppression when the Codex model is Sol-family.*
+*Prepend: defensive framing (always); no-explore if referencing many files; doc-provenance if it cites owner-revisable docs; nitpick suppression (always).*
 
 ```
 Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.

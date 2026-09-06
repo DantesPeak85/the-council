@@ -25,7 +25,7 @@ better. Overlap in the source session was low — each found material the others
 
 | Reviewer | The lens it actually brings | Representative unique catch |
 |---|---|---|
-| **Codex (`gpt-5.6-sol`)** | code semantics, impossibility, threat model | "atomic compare-and-serve cannot exist — no transaction spans a DB check and bytes reaching a client"; time-derived state absent from a cache key; a `run_id` header being spoofable |
+| **Codex (`gpt-6-astra`)** | code semantics, impossibility, threat model | "atomic compare-and-serve cannot exist — no transaction spans a DB check and bytes reaching a client"; time-derived state absent from a cache key; a `run_id` header being spoofable |
 | **Gemini** | product + operational consequence | a 1-minute cron poll meaning 70 s of generic copy after every user action; a DB transaction held across a 22 s model call exhausting the pool; the arithmetic showing a precompute wasted 70% |
 | **Qwen** | structure, completeness, missing gates | no go/no-go gate on the metric the whole design depended on; an entire workstream silently dropped between plan versions |
 | **Fable** | re-runs reality against **our own** claims | three factual errors in the authoring agent's own document — a wrong arithmetic result, a count off by 2×, a figure built on a lagging data export |
@@ -38,11 +38,11 @@ The advisors reason about the text they are given. Fable re-executes the claims.
 
 ## 2. The Codex seat: pin the model, and never read a truncated listing
 
-**Native default:** `gpt-5.6-sol` from `~/.codex/config.toml`, effort `xhigh`. Verify the invoke
+**Native default:** `gpt-6-astra` from `~/.codex/config.toml` (Tom 2026-09-06; supersedes `gpt-5.6-sol`), effort per review tier (medium routine / high hard-to-reverse / xhigh milestone). Verify the invoke
 banner shows both.
 
 **On native failure** (429, "Quota exhausted", rate limit — read the error log, do not guess),
-fall back to OpenRouter with **`openai/gpt-5.6-sol`**.
+fall back to OpenRouter with **`openai/gpt-6-astra`**.
 
 > **This is load-bearing.** In the source session the fallback first ran `openai/gpt-5.3-codex`,
 > chosen off a model list truncated by `head -20` that cut off right before the 5.6 family. It
@@ -51,20 +51,34 @@ fall back to OpenRouter with **`openai/gpt-5.6-sol`**.
 >
 > When resolving a model id, list the full family and grep it — never `head` a model listing.
 
-Sol over-flags nitpicks (CodeRabbit benchmark: 31.6% actionable precision), which is why the prompt
-templates carry the suppression instruction. Take the recall; filter the noise.
+Sol over-flagged nitpicks (CodeRabbit benchmark: 31.6% actionable precision), which is why the prompt
+templates carry the suppression instruction — kept on for Astra until measured otherwise. Take the recall; filter the noise.
 
 ---
 
-## 3. The Qwen seat (milestone tier only)
+## 3. The Qwen seat (milestone tier only) — and the opt-in GLM seat
 
-- Model: **`qwen/qwen3.8-max`** via OpenRouter.
-- **`max_tokens` must be ≥ 32000.** At 9,000 it spent **9,002 completion tokens entirely on
-  reasoning and returned zero visible text** — `finish_reason: MAX_TOKENS` starvation. The usage
-  block shows it plainly: `reasoning_tokens: 9000`, `content: ""`.
-- Add to the system prompt: *"Keep internal reasoning SHORT and spend your output budget on the
-  written review."*
-- Cost at milestone scale: ~$0.15 per review of a ~42 KB prompt.
+Both are **OpenRouter seats driven by the script since 1.6.0**: `--openrouter qwen`
+(milestone) or `--openrouter qwen,glm`, alone (`--openrouter-only`) or alongside the CLI
+advisors. No hand-built curl — that is how the truncated-listing wrong-model review of
+2026-08-04 happened.
+
+- **Model: the NEWEST flagship on OpenRouter's live listing at launch** (Tom 2026-09-06):
+  `qwen/qwen<ver>-max(-mmdd)` and `z-ai/glm-<ver>`, numeric version order, flash / turbo /
+  preview / thinking / vision variants and `:free` / `:batch` rows ignored. The banner prints the
+  id and its source; `<seat>_usage.log` records the model actually served. `COUNCIL_QWEN_MODEL` /
+  `COUNCIL_GLM_MODEL` pin explicitly. If the listing is unreachable the script says so loudly and
+  uses its last-known id (2026-09-06: `qwen3.8-max-0902`, `glm-5.3`).
+- **`max_tokens` 32000 by default** (`COUNCIL_OPENROUTER_MAX_TOKENS`). At 9,000 Qwen spent **9,002
+  completion tokens entirely on reasoning and returned zero visible text**. The script detects
+  that shape and names it (`starved: N reasoning tokens, empty content`).
+- The driver line (*keep internal reasoning short, start with VERDICT:*) rides in both the system
+  and the user turn — Qwen ignored a system-only instruction on the 2026-09-06 probe.
+- Effort follows `COUNCIL_CODEX_EFFORT` (`COUNCIL_OPENROUTER_EFFORT` to decouple).
+- Cost: Qwen ~$0.08 for a 26 KB diff review at medium (2026-09-06), ~$0.15 for a 42 KB plan.
+- GLM: an unmeasured lens, opt-in only, in no tier by default. ~$0.02 per 26 KB diff review at
+  medium, ~70 s. Responses stream (a NON-streaming GLM request sat 9 minutes receiving only
+  keep-alive whitespace, then timed out), so a timeout still leaves `<seat>_partial.md`.
 
 Qwen is the third-best of the three advisors on average but consistently finds **absences** — the
 gate nobody specified, the section that quietly disappeared between drafts. That is a different
@@ -191,15 +205,16 @@ adjacent code is the point.
 ## 8. Quick reference
 
 ```
-Routine change     → Fable(low) + Codex(gpt-5.6-sol)
-Hard-to-reverse    → Fable(low) + Codex(gpt-5.6-sol) + Gemini
-Milestone / plan   → Fable(low) + Codex(gpt-5.6-sol) + Gemini + Qwen(qwen3.8-max, 32k tokens)
+Routine change     → Fable(low) + Codex(gpt-6-astra)
+Hard-to-reverse    → Fable(low) + Codex(gpt-6-astra) + Gemini
+Milestone / plan   → Fable(low) + Codex(gpt-6-astra) + Gemini + Qwen(--openrouter qwen: newest on listing, 32k tokens)
+GLM                → opt-in only (--openrouter glm), no tier
 At merge of a stage that ships a fix → add Fable(high)
 
 Fable HIGH tiering  → T1 shell (no model) · T2 cheap delegate, low effort, RAW output
                       · T3 high, main session, judgment only
                       skip T3 if T1+T2 clean AND no fix shipped
-Codex native fails → OpenRouter openai/gpt-5.6-sol   (never a lesser variant)
+Codex native fails → OpenRouter openai/gpt-6-astra   (never a lesser variant)
 Repo busy          → isolated scratch workspace
 Same root cause 2 rounds running → stop; decide
 ```

@@ -42,7 +42,7 @@ EOF
 run_pf() {
   local wd="$1" out="$2"; shift 2
   set +e
-  env -u OPENAI_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY \
+  env -u OPENAI_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY -u OPENROUTER_API_KEY \
       HOME="$FAKEHOME" NVM_DIR="$FAKEHOME/.nvm" \
       PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
       "$@" bash "$PREFLIGHT" "$wd" > "$out" 2> "${out}.err"
@@ -61,11 +61,13 @@ FAKEHOME="$TMP/p1/home"; mkdir -p "$FAKEHOME"
 FAKE_BIN="$TMP/p1/bin";  mkdir -p "$FAKE_BIN"
 mkstub "$FAKE_BIN/gemini" "gemini-cli 0.42.0 (fake)"   # gemini-cli present, NO agy, NO codex
 WD="$TMP/p1/wd"; mkdir -p "$WD"
-run_pf "$WD" "$TMP/p1.out" GEMINI_API_KEY=test-key
+run_pf "$WD" "$TMP/p1.out" GEMINI_API_KEY=test-key OPENROUTER_API_KEY=test-or-key
 [[ $PF_RC -eq 0 ]] || { cat "$TMP/p1.out.err"; fail "P1: expected exit 0, got $PF_RC"; }
 assert_kv "$TMP/p1.out" GEMINI_CLI_AVAILABLE true   P1
 assert_kv "$TMP/p1.out" AGY_AVAILABLE        false  P1
 assert_kv "$TMP/p1.out" GEMINI_API_KEY_SET   true   P1
+assert_kv "$TMP/p1.out" OPENROUTER_API_KEY_SET true P1
+assert_kv "$TMP/p1.out" OPENROUTER_AVAILABLE  true P1
 assert_kv "$TMP/p1.out" GEMINI_AUTHENTICATED  true  P1
 assert_kv "$TMP/p1.out" CODEX_AUTHENTICATED  false  P1
 pass "P1: gemini-cli-only + GEMINI_API_KEY authenticates (agy independent, false)"
@@ -80,6 +82,8 @@ run_pf "$WD" "$TMP/p2.out"                            # …but no oauth_creds, n
 [[ $PF_RC -eq 1 ]] || fail "P2: expected exit 1 (unauthenticated), got $PF_RC"
 assert_kv "$TMP/p2.out" AGY_AVAILABLE        true   P2
 assert_kv "$TMP/p2.out" GEMINI_API_KEY_SET   false  P2
+assert_kv "$TMP/p2.out" OPENROUTER_API_KEY_SET false P2
+assert_kv "$TMP/p2.out" OPENROUTER_AVAILABLE  false P2
 assert_kv "$TMP/p2.out" GEMINI_AUTHENTICATED false  P2
 pass "P2: settings.json presence does NOT authenticate"
 
@@ -127,7 +131,7 @@ echo 'model = "gpt-5.5"' > "$FAKEHOME/.codex/config.toml"
 FAKE_BIN="$TMP/p5/bin"; mkdir -p "$FAKE_BIN"
 mkstub "$FAKE_BIN/gemini" "gemini-cli 0.42.0 (fake)"
 WD="$TMP/p5/wd"; mkdir -p "$WD"
-CACHE="$WD/.council-tmp/preflight_cache_v2"
+CACHE="$WD/.council-tmp/preflight_cache_v3"
 run_pf "$WD" "$TMP/p5.first.out" GEMINI_API_KEY=test-key
 [[ $PF_RC -eq 0 ]] || fail "P5: first run exit $PF_RC"
 assert_kv "$TMP/p5.first.out" GEMINI_CLI_AVAILABLE true P5

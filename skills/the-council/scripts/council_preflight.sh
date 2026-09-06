@@ -2,7 +2,7 @@
 # council_preflight.sh — Check CLI availability and authentication
 # Exit codes: 0 = at least one advisor available+authenticated, 1 = none
 # Outputs key=value status lines to stdout.
-# Caches result in .council-tmp/preflight_cache_v2 for session reuse.
+# Caches result in .council-tmp/preflight_cache_v3 for session reuse.
 #
 # Gemini facts are reported INDEPENDENTLY (v1.4.0). The invoke script resolves a
 # backend at runtime (gemini CLI when GEMINI_API_KEY is set, else agy), so agy
@@ -12,6 +12,10 @@
 #   GEMINI_CLI_AVAILABLE   — Google `gemini` CLI present
 #   GEMINI_API_KEY_SET     — GEMINI_API_KEY or GOOGLE_API_KEY exported
 #   GEMINI_AUTHENTICATED   — credentials present AND >=1 backend binary present
+# OpenRouter seats (v1.6.0) are optional extra advisors; they never make the
+# preflight pass on their own:
+#   OPENROUTER_API_KEY_SET — OPENROUTER_API_KEY exported
+#   OPENROUTER_AVAILABLE   — key set AND curl AND python3 present
 #
 # Usage: council_preflight.sh [working_directory]
 #   working_directory: defaults to current directory
@@ -22,9 +26,9 @@ WORK_DIR="${1:-.}"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
 mkdir -p "${WORK_DIR}/.council-tmp"
-# v2 schema: pre-1.4 caches lack the independent-fact keys + exit status and must
-# never be replayed, so the filename is bumped rather than reused.
-CACHE_FILE="${WORK_DIR}/.council-tmp/preflight_cache_v2"
+# v3 schema (1.6.0 adds the OpenRouter facts): older caches lack keys the invoke
+# docs tell callers to read, so the filename is bumped rather than reused.
+CACHE_FILE="${WORK_DIR}/.council-tmp/preflight_cache_v3"
 
 # Invalidate if the Codex config changed since the cache was written — auth/model
 # fixed mid-session must not stay invisible for the 2-hour TTL.
@@ -62,6 +66,8 @@ GEMINI_API_KEY_SET=false
 GEMINI_INSTALLED=false      # any Gemini backend binary present (agy OR gemini-cli)
 GEMINI_AUTHENTICATED=false
 AGY_VERSION=""
+OPENROUTER_API_KEY_SET=false
+OPENROUTER_AVAILABLE=false
 
 # --- Check Codex CLI ---
 if command -v codex &>/dev/null; then
@@ -105,6 +111,14 @@ if [[ "$GEMINI_CREDENTIALS" == "true" && "$GEMINI_INSTALLED" == "true" ]]; then
   GEMINI_AUTHENTICATED=true
 fi
 
+# --- OpenRouter seats: key + transport. Optional; never satisfies the gate alone.
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+  OPENROUTER_API_KEY_SET=true
+  if command -v curl &>/dev/null && command -v python3 &>/dev/null; then
+    OPENROUTER_AVAILABLE=true
+  fi
+fi
+
 # At least one advisor must be ready.
 if [[ "$CODEX_AUTHENTICATED" == "true" || "$GEMINI_AUTHENTICATED" == "true" ]]; then
   PREFLIGHT_EXIT=0
@@ -124,6 +138,8 @@ AGY_VERSION=$AGY_VERSION
 AGY_AVAILABLE=$AGY_AVAILABLE
 GEMINI_CLI_AVAILABLE=$GEMINI_CLI_AVAILABLE
 GEMINI_API_KEY_SET=$GEMINI_API_KEY_SET
+OPENROUTER_API_KEY_SET=$OPENROUTER_API_KEY_SET
+OPENROUTER_AVAILABLE=$OPENROUTER_AVAILABLE
 PREFLIGHT_EXIT=$PREFLIGHT_EXIT"
 
 # Cache and output

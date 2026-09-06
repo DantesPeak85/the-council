@@ -36,6 +36,9 @@ run_council() {
   local prompt="$3"
   local stderr_log="$4"
 
+  # COUNCIL_GEMINI_BACKEND=agy is forced below: with an ambient GEMINI_API_KEY and a
+  # real `gemini` on PATH, `auto` would pick gemini-cli, the fake agy would never run,
+  # and every ghost-write assertion would pass vacuously (it did, until 2026-09-06).
   local fake_bin="$TMPDIR_TEST/fake-bin-$$"
   rm -rf "$fake_bin"
   mkdir -p "$fake_bin"
@@ -43,12 +46,12 @@ run_council() {
 
   set +e
   if [[ -n "$fake_target" ]]; then
-    FAKE_AGY_GHOST_TARGET="$fake_target" PATH="$fake_bin:$PATH" \
+    COUNCIL_GEMINI_BACKEND=agy FAKE_AGY_GHOST_TARGET="$fake_target" PATH="$fake_bin:$PATH" \
       bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$prompt" "$project" \
       > "$TMPDIR_TEST/stdout.log" 2> "$stderr_log"
   else
     # No ghost write: point target to a no-op (overwrites a file we'll clean up)
-    FAKE_AGY_GHOST_TARGET="/tmp/fake-agy-noop-$$.txt" PATH="$fake_bin:$PATH" \
+    COUNCIL_GEMINI_BACKEND=agy FAKE_AGY_GHOST_TARGET="/tmp/fake-agy-noop-$$.txt" PATH="$fake_bin:$PATH" \
       bash "$COUNCIL_SCRIPT" --gemini-only --allow-unsandboxed-gemini "$prompt" "$project" \
       > "$TMPDIR_TEST/stdout.log" 2> "$stderr_log"
     rm -f "/tmp/fake-agy-noop-$$.txt"

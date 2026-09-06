@@ -2,7 +2,7 @@
 # Asserts the v1.4.0 Codex lane:
 #   1. Prompt travels via stdin (`-` + redirect), NOT argv → no ARG_MAX, no stdin-hang
 #   2. Explicit flags: --sandbox read-only, --ask-for-approval never; NO --full-auto
-#   3. Reasoning effort: -c model_reasoning_effort=xhigh by default;
+#   3. Reasoning effort: -c model_reasoning_effort=medium by default (1.5.0 tiered effort);
 #      COUNCIL_CODEX_EFFORT=config omits the override
 #   4. Timeout enforcement: COUNCIL_TIMEOUT kills a slow codex, exit 124 is
 #      classified as timeout (sentinel-based watchdog), no orphaned process
@@ -34,13 +34,14 @@ export FAKE_CODEX_LOG="$TMPDIR_TEST/codex.log"
 PATH="$FAKE_BIN:$PATH" bash "$COUNCIL_SCRIPT" --codex-only "$PROMPT" "$PROJECT" \
   || fail "codex-only invocation errored"
 grep -q 'ARGV:.*--sandbox read-only' "$FAKE_CODEX_LOG" || fail "missing --sandbox read-only"
+grep -q 'ARGV:.*--skip-git-repo-check' "$FAKE_CODEX_LOG" || fail "missing --skip-git-repo-check (scratch-workspace mode)"
 grep -q 'ARGV:.*approval_policy=never' "$FAKE_CODEX_LOG" || fail "missing -c approval_policy=never"
 grep -q 'ARGV:.*--full-auto' "$FAKE_CODEX_LOG" && fail "--full-auto still present (deprecated)"
-grep -q 'ARGV:.*model_reasoning_effort=xhigh' "$FAKE_CODEX_LOG" || fail "missing xhigh effort override"
+grep -q 'ARGV:.*model_reasoning_effort=medium' "$FAKE_CODEX_LOG" || fail "missing medium effort override (1.5.0 default)"
 grep -Eq 'STDIN_BYTES:3[0-9]{5}' "$FAKE_CODEX_LOG" || fail "prompt did not arrive via stdin"
 # the 300KB prompt must NOT appear in argv
 grep -q 'ARGV:.*Review this\. Review this\.' "$FAKE_CODEX_LOG" && fail "prompt leaked into argv"
-pass "default codex lane: stdin prompt, explicit flags, xhigh"
+pass "default codex lane: stdin prompt, explicit flags, medium effort"
 
 # --- effort escape hatch ---
 : > "$FAKE_CODEX_LOG"

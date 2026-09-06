@@ -59,6 +59,10 @@ backend automatically (`COUNCIL_GEMINI_BACKEND=auto`):
 | true | false | `agy` (pty-wrapped, sandboxed, single-shot) |
 | false | any | `agy` (pty-wrapped, sandboxed, single-shot) |
 
+**OpenRouter seats** (1.6.0): preflight also reports `OPENROUTER_API_KEY_SET` and
+`OPENROUTER_AVAILABLE` (key + curl + python3). They are optional extra advisors and
+never change the mode above — a machine with only an OpenRouter key still aborts.
+
 Note: gemini-cli's free oauth-personal auth stopped serving 2026-06-18 — the
 gemini backend requires a paid Gemini API key (`GEMINI_API_KEY` or
 `GOOGLE_API_KEY`, AI Studio) exported in the environment.
@@ -104,8 +108,8 @@ Four decisions this step makes, all load-bearing:
    statements. Low by default — its work is mechanical, and effort does not make a grep more true.
    Reserve **high** for the merge of a stage that ships a fix, where the question becomes "does this
    close the class, or only the named trigger?"
-2. **The Codex seat is `gpt-5.6-sol`.** On native failure the OpenRouter fallback is
-   `openai/gpt-5.6-sol` — never a lesser variant. In the source session `gpt-5.3-codex` returned
+2. **The Codex seat is `gpt-6-astra`** (Tom 2026-09-06; supersedes `gpt-5.6-sol`). On native failure the OpenRouter fallback is
+   `openai/gpt-6-astra` — never a lesser variant (not `-pro`, not a Sol or Codex-family id). Sol-era evidence: in the source session `gpt-5.3-codex` returned
    REVISE and `gpt-5.6-sol` returned RESTRUCTURE on the *identical prompt*, with three critical
    findings no other reviewer produced. **Model choice changed the verdict.** Never resolve a model
    id from a truncated listing — list the full family and grep it.
@@ -181,7 +185,7 @@ Write the composed prompt to a temporary file. Include all relevant context inli
    Without this, Council issues strict text-literal REVISE verdicts the
    owner then overrules (2026-05-13 charter-as-decree incident).
 
-4. **Nitpick suppression** (gpt-5.6-sol): Sol over-flags (CodeRabbit
+4. **Nitpick suppression** (every Codex model — measured on gpt-5.6-sol, kept on for gpt-6-astra until measured otherwise): Sol over-flagged (CodeRabbit
    benchmark: 31.6% actionable precision). Instruct: "Rank findings by
    severity. Suppress low-confidence nitpicks; report only findings you
    would defend in review."
@@ -206,6 +210,25 @@ nohup bash <skill_dir>/scripts/council_invoke.sh --codex-only <prompt_file> <wor
 nohup bash <skill_dir>/scripts/council_invoke.sh --gemini-only <prompt_file> <working_directory> \
   > /tmp/council_gemini_launch.log 2>&1 & disown
 ```
+
+**OpenRouter seats (1.6.0)** — the milestone-tier Qwen seat, the opt-in GLM seat, or
+any raw `vendor/model` id, over HTTPS with no CLI and no repo access. Launch them the
+same way; one process can carry several seats:
+
+```bash
+nohup bash <skill_dir>/scripts/council_invoke.sh --openrouter-only --openrouter qwen <prompt_file> <working_directory> \
+  > /tmp/council_openrouter_launch.log 2>&1 & disown
+```
+
+Named seats resolve AT LAUNCH to the newest flagship on OpenRouter's live listing
+(numeric version order; flash/turbo/preview/thinking variants ignored) — the banner
+prints the id and its source (`newest on the live listing` / `explicit id` /
+`FALLBACK last-known id`). Never hand-roll a curl for these seats again; that is how
+the truncated-listing wrong-model review happened. Responses stream, so a timeout
+still salvages partial text (`<seat>_partial.md`), and every run writes
+`<seat>_usage.log` with the served model, reasoning tokens and USD cost. Measured
+2026-09-06 on a 26 KB diff at medium: Qwen ~$0.08, GLM ~$0.02, both well inside the
+default timeout.
 
 Each produces its own temp directory (`.council-tmp/council_codex_YYYYMMDD_HHMMSS/`
 and `.council-tmp/council_gemini_YYYYMMDD_HHMMSS/` inside the working directory).
@@ -271,11 +294,15 @@ bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
 ```
 
 **Environment overrides:**
-- `CODEX_MODEL` — default: from `~/.codex/config.toml` (standard: gpt-5.6-sol)
+- `CODEX_MODEL` — default: from `~/.codex/config.toml` (standard: gpt-6-astra, Tom 2026-09-06)
 - `COUNCIL_CODEX_EFFORT` — default: `medium`. **Effort follows the review tier (Tom 2026-08-20): `medium` routine / `high` hard-to-reverse / `xhigh` milestone-only.** Set explicitly per invocation when the tier calls for more; `config` defers to config.toml. Blanket xhigh is retired — it burned native quota + OpenRouter spend on routine diffs.
 - `COUNCIL_TIMEOUT` — default: `600` (seconds per advisor; raise to 900 for very large xhigh reviews)
 - `COUNCIL_GEMINI_BACKEND` — default: `auto` (`gemini` | `agy`)
 - `COUNCIL_GEMINI_MODEL` — optional model pin for either backend
+- `COUNCIL_OPENROUTER_SEATS` — same as `--openrouter` (flag wins): `qwen`, `glm`, or raw `vendor/model` ids, comma-separated. Needs `OPENROUTER_API_KEY`.
+- `COUNCIL_OPENROUTER_EFFORT` — default: follows `COUNCIL_CODEX_EFFORT` (`none` omits the reasoning block)
+- `COUNCIL_OPENROUTER_MAX_TOKENS` — default: `32000` (Qwen starves below ~32k)
+- `COUNCIL_QWEN_MODEL` / `COUNCIL_GLM_MODEL` — explicit id for a named seat; skips the live-listing lookup
 - `COUNCIL_SNAPSHOT_EXCLUDES` — comma-separated pathspecs excluded from the safety-net snapshot
 - `AGY_PRINT_TIMEOUT` — default: `8m` (must stay below COUNCIL_TIMEOUT)
 
@@ -382,6 +409,9 @@ If you presented an early result during progressive polling (Step 3b), the user 
 
 ## Gemini ({backend}/{model})
 [Full Gemini response]
+
+## Qwen ({model as served, from qwen_usage.log})   ← only when an OpenRouter seat ran; same for GLM
+[Full seat response]
 
 ## Claude's Take
 [Your own assessment]
@@ -493,28 +523,38 @@ Either (a) an advisor sandbox escape (rare — investigate as a real security is
 
 ## Model and Effort Configuration
 
-- **Codex**: model from `~/.codex/config.toml` (standard: `gpt-5.6-sol`,
-  1.05M context), overridable via `CODEX_MODEL`. Reasoning effort is set
+- **Codex**: model from `~/.codex/config.toml` (standard: `gpt-6-astra`,
+  Tom 2026-09-06), overridable via `CODEX_MODEL`. Reasoning effort is set
   EXPLICITLY by the script: `-c model_reasoning_effort=medium` by default
-  (`COUNCIL_CODEX_EFFORT` to change). Sol note: highest review recall of any
-  current model, but over-flags nitpicks — the prompt templates include a
-  suppression instruction.
+  (`COUNCIL_CODEX_EFFORT` to change). Nitpick note: Sol had the highest review recall of any
+  model measured but over-flagged nitpicks — the prompt templates keep the
+  suppression instruction on for Astra until measured otherwise.
 - **Gemini**: backend-dependent. gemini-cli: model via `COUNCIL_GEMINI_MODEL`
   → `-m`. agy: `COUNCIL_GEMINI_MODEL` → `--model` (run `agy models` for ids;
   a Pro tier gives deeper reviews than the default Flash).
-- Both advisors review INLINED content; only Codex additionally has
+- **OpenRouter seats** (`--openrouter qwen,glm`): model resolved at launch as
+  the newest flagship of the family on OpenRouter's live listing (override via
+  `COUNCIL_QWEN_MODEL` / `COUNCIL_GLM_MODEL`); effort follows
+  `COUNCIL_CODEX_EFFORT` unless `COUNCIL_OPENROUTER_EFFORT` says otherwise;
+  `max_tokens` 32000 by default. Advisory only — Codex remains the gate.
+- All advisors review INLINED content; only Codex additionally has
   read-only filesystem access to the working directory.
 
 ### Fallback and extra seats via OpenRouter
 
-Used when the Codex CLI fails (rate limit / quota — read the error log, never
-guess) and for the milestone-tier Qwen seat. Full detail in
-[references/reviewer-selection.md](references/reviewer-selection.md) §2, §3, §7.
+Two different things share the OpenRouter account:
+
+1. **The Codex FALLBACK** — used only when the native Codex CLI fails (rate limit /
+   quota — read the error log, never guess). Still a config.toml provider switch,
+   see [references/reviewer-selection.md](references/reviewer-selection.md) §2.
+2. **Extra SEATS** — Qwen (milestone tier) and GLM (opt-in), scripted since 1.6.0
+   via `--openrouter qwen,glm`. No hand-built curl. §3 and §7 there.
 
 | Seat | Model id | Notes |
 |---|---|---|
-| Codex fallback | **`openai/gpt-5.6-sol`** | Never a lesser variant. 5.3-codex → REVISE vs 5.6-sol → RESTRUCTURE on an identical prompt, 2026-08-04. |
-| Qwen (milestone) | **`qwen/qwen3.8-max`** | `max_tokens` ≥ **32000**, plus a system-prompt line telling it to keep internal reasoning short. |
+| Codex fallback | **`openai/gpt-6-astra`** | Never a lesser variant (id confirmed on OpenRouter's listing 2026-09-06). Sol-era evidence: 5.3-codex → REVISE vs 5.6-sol → RESTRUCTURE on an identical prompt, 2026-08-04. |
+| Qwen (milestone) | **newest `qwen/qwen<ver>-max` on the live listing** (2026-09-06: `qwen3.8-max-0902`) | Resolved by the script at launch; `max_tokens` 32000 default; starvation is detected and named. ~$0.08 per 26 KB diff review at medium. |
+| GLM (opt-in) | **newest `z-ai/glm-<ver>` on the live listing** (2026-09-06: `glm-5.3`) | Unmeasured lens; ~$0.02 per 26 KB diff review at medium. Not part of any tier by default. |
 
 Operational notes that cost a session to learn:
 
@@ -525,14 +565,14 @@ Operational notes that cost a session to learn:
   account balance — adding credit changes nothing. Raise the limit on the key
   itself at the URL in the error body. Inspect with `GET /api/v1/key`
   (`usage` / `limit` / `limit_remaining`).
-- Long reviews exceed a 2-minute foreground tool timeout: launch the `curl`
-  **detached** (`nohup … & disown`) and poll the response file, exactly as §3a
-  does for the advisors. The file is written progressively, so confirm the
-  writer exited before parsing — a mid-write `json.load` fails with
-  "Expecting value".
-- Always report the `usage` block: `cost` and
-  `completion_tokens_details.reasoning_tokens`. **High reasoning tokens with
-  empty content is budget starvation, not a refusal** — raise `max_tokens`.
+- Long reviews exceed a 2-minute foreground tool timeout: launch the seat
+  **detached** (`nohup … & disown`) and poll for `<seat>_response.md`, exactly
+  as §3a does for the advisors. The script streams and parses for you — never
+  read `<seat>_raw.json` while curl is still writing it.
+- Always report `<seat>_usage.log`: served model, `cost_usd`,
+  `reasoning_tokens`. **High reasoning tokens with empty content is budget
+  starvation, not a refusal** — the script names it (`starved:`); raise
+  `COUNCIL_OPENROUTER_MAX_TOKENS` or lower the effort.
 
 ## Error Handling
 

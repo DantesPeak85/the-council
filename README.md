@@ -74,9 +74,11 @@ The council is also invoked proactively during high-stakes architectural decisio
 
 **Codex** (`~/.codex/config.toml`) — set your preferred model:
 ```toml
-model = "gpt-5.6-sol"
+model = "gpt-6-astra"
 ```
 Reasoning effort is set by the invoke script (`COUNCIL_CODEX_EFFORT=xhigh` by default), so you do **not** need `model_reasoning_effort` in config. Set `COUNCIL_CODEX_EFFORT=config` if you'd rather the script defer to `config.toml`.
+
+**OpenRouter seats (1.6.0)** — optional extra advisors over HTTPS: `export OPENROUTER_API_KEY=…` (in `~/.zshenv`, never in a prompt), then `--openrouter qwen` (milestone-tier Qwen) or `--openrouter qwen,glm`, or any raw `vendor/model` id. Named seats resolve at launch to the newest flagship on OpenRouter's live listing; the banner prints the id and where it came from.
 
 **Gemini** — no config file needed. To pin a model for either backend, export `COUNCIL_GEMINI_MODEL` (run `agy models` for agy ids; an AI Studio model id for gemini-cli). Left unset, each backend uses its own default.
 

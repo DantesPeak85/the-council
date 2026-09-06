@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
-# council_invoke.sh — Invoke Codex and Gemini in parallel, capture responses
+# council_invoke.sh — Invoke Codex, Gemini and optional OpenRouter seats in parallel, capture responses
 #
-# Usage: council_invoke.sh [--codex-only|--gemini-only] [--context-file <path>] <prompt_file> [working_directory]
+# Usage: council_invoke.sh [--codex-only|--gemini-only|--openrouter-only] [--openrouter <seats>] [--context-file <path>] <prompt_file> [working_directory]
 #   --codex-only:         Only invoke Codex (skip Gemini)
 #   --gemini-only:        Only invoke Gemini (skip Codex)
+#   --openrouter <seats>: Add OpenRouter seats — comma list of qwen | glm | vendor/model (v1.6.0)
+#   --openrouter-only:    Skip Codex AND Gemini; run only the OpenRouter seats
 #   --context-file <path>: Append contents of this file to the prompt (for retry context)
 #   prompt_file:          Path to a text file containing the advisory prompt
 #   working_directory:    defaults to current directory
 #
 # Outputs: Paths to response files (one per line, last lines of stdout)
-#   Full mode:   codex response path, then gemini response path
+#   Full mode:   codex response path, then gemini response path, then one per OpenRouter seat
 #   Single mode: only the active advisor's response path
 #
 # Environment:
 #   CODEX_MODEL    — Override Codex model (default: auto, from ~/.codex/config.toml)
 #   COUNCIL_GEMINI_MODEL — Override Gemini model passed to agy --model (default: agy's own)
+#   COUNCIL_OPENROUTER_SEATS — Same as --openrouter (flag wins). Needs OPENROUTER_API_KEY.
+#   COUNCIL_OPENROUTER_EFFORT — reasoning effort for OpenRouter seats (default: COUNCIL_CODEX_EFFORT; `none` omits it)
+#   COUNCIL_OPENROUTER_MAX_TOKENS — default 32000 (Qwen starves below ~32k)
+#   COUNCIL_QWEN_MODEL / COUNCIL_GLM_MODEL — explicit id for a named seat (skips the live-listing lookup)
+#   OPENROUTER_MODELS_URL / OPENROUTER_URL — endpoint overrides (tests)
 #   COUNCIL_TIMEOUT  — Max seconds to wait per advisor (default: 600)
 #   AGY_PRINT_TIMEOUT — Override agy --print-timeout (default: 8m)
 #                      agy's own 5m default can race with COUNCIL_TIMEOUT; 8m
@@ -553,6 +560,303 @@ validate_response() {
   return 0
 }
 
+# --- OpenRouter seats (v1.6.0) ---
+# Extra advisors reached over plain HTTPS: no CLI, no repo access, no writes
+# outside $TMPDIR_COUNCIL. Qwen is the milestone-tier fourth seat; GLM is
+# opt-in; any raw `vendor/model` id is accepted verbatim. Before 1.6.0 every
+# such run was a hand-built curl from the session — the exact shape that
+# produced the truncated-listing wrong-model incident (2026-08-04).
+#
+# NAMED SEATS ALWAYS RESOLVE TO THE NEWEST FLAGSHIP (Tom 2026-09-06): the
+# script fetches OpenRouter's FULL model listing at every run and picks the
+# highest version of the family (numeric per segment, so 3.10 > 3.8; then
+# newest `created`). Nothing here pins a dated id. The *_FALLBACK constants
+# are last-known ids used ONLY when the listing is unreachable or the family
+# rule matches nothing — and that is announced in the banner, never silent.
+OPENROUTER_URL="${OPENROUTER_URL:-https://openrouter.ai/api/v1/chat/completions}"
+OPENROUTER_MODELS_URL="${OPENROUTER_MODELS_URL:-https://openrouter.ai/api/v1/models}"
+OPENROUTER_QWEN_FALLBACK="qwen/qwen3.8-max-0902"   # last-known newest on 2026-09-06
+OPENROUTER_GLM_FALLBACK="z-ai/glm-5.3"             # last-known newest on 2026-09-06
+OPENROUTER_MAX_TOKENS_DEFAULT=32000                 # Qwen at 9k spent every token on reasoning and returned empty content
+
+# Fetch the listing (public endpoint, no key) and prove it parses. $1 = out file.
+# $2 = stderr capture (curl + parse diagnostics) so an outage is explainable.
+fetch_openrouter_listing() {
+  curl -sS --max-time 20 -o "$1" "$OPENROUTER_MODELS_URL" 2>"$2" \
+    && python3 -c 'import json,sys; json.load(open(sys.argv[1]))["data"]' "$1" 2>>"$2"
+}
+
+# Newest flagship of a family from a listing file. $1 = listing, $2 = qwen|glm.
+# Family rules (flagship only — no flash/turbo/air/preview/thinking/vision
+# variants, no :free/:batch suffixes):
+#   qwen  ^qwen/qwen<ver>-max(-<mmdd>)?$
+#   glm   ^z-ai/glm-<ver>$
+pick_latest_openrouter_model() {
+  python3 - "$1" "$2" <<'PYEOF'
+import json, re, sys
+listing, family = sys.argv[1], sys.argv[2]
+rules = {
+    "qwen": re.compile(r"^qwen/qwen(\d+(?:\.\d+)*)-max(?:-\d{4})?$"),
+    "glm":  re.compile(r"^z-ai/glm-(\d+(?:\.\d+)*)$"),
+}
+rule = rules[family]
+best = None
+for m in json.load(open(listing))["data"]:
+    mid = m.get("id", "")
+    mt = rule.match(mid)
+    if not mt:
+        continue
+    key = (tuple(int(x) for x in mt.group(1).split(".")), int(m.get("created") or 0), mid)
+    if best is None or key > best[0]:
+        best = (key, mid)
+if best is None:
+    sys.exit(1)
+print(best[1])
+PYEOF
+}
+
+# seat → "model<TAB>source" — NO trailing newline; the caller splits on the tab.
+# $1 = seat, $2 = listing file ('' if unavailable).
+# Named seats: COUNCIL_QWEN_MODEL / COUNCIL_GLM_MODEL override (source=override)
+# → newest on the listing (source=listing) → last-known id (source=fallback).
+# Anything containing '/' is a raw id used verbatim (source=raw). An unknown
+# bare name returns 1 so a typo fails at startup, not mid-run.
+resolve_openrouter_seat_model() {
+  local seat="$1" listing="${2:-}" override fallback picked
+  case "$seat" in
+    qwen) override="${COUNCIL_QWEN_MODEL:-}"; fallback="$OPENROUTER_QWEN_FALLBACK" ;;
+    glm)  override="${COUNCIL_GLM_MODEL:-}";  fallback="$OPENROUTER_GLM_FALLBACK" ;;
+    */*)  printf '%s\traw' "$seat"; return 0 ;;
+    *)    return 1 ;;
+  esac
+  if [[ -n "$override" ]]; then printf '%s\toverride' "$override"; return 0; fi
+  if [[ -n "$listing" && -s "$listing" ]] && picked="$(pick_latest_openrouter_model "$listing" "$seat")"; then
+    printf '%s\tlisting' "$picked"; return 0
+  fi
+  printf '%s\tfallback' "$fallback"
+}
+
+# Display label (banner / report) and filesystem-safe slug (raw ids carry '/').
+seat_label() { case "$1" in qwen) printf 'Qwen' ;; glm) printf 'GLM' ;; *) printf '%s' "$1" ;; esac; }
+seat_slug()  { printf '%s' "$1" | tr '/:' '__'; }
+
+# Parse an OpenRouter response capture. $1 raw, $2 http code, $3 label,
+# $4 usage file, $5 partial file, $6 mode (complete|partial).
+# Handles BOTH shapes: SSE (the lane streams — `stream: true`; a non-streaming
+# request to GLM sat 9 minutes receiving only keep-alive whitespace and timed
+# out, while the same prompt streamed completes in ~70 s — and a timeout still
+# salvages whatever text arrived) and a
+# plain JSON object (error envelopes; a server that ignored `stream`).
+# complete mode: prints the review or a [COUNCIL-ADVISOR-FAILURE] line, exit 3 on failure.
+#   A streamed review counts as COMPLETE only when choice 0 carried
+#   `finish_reason: stop` — the FIRST finish is binding, content after it is a
+#   defect, other choice indices are unexpected, and `[DONE]` proves only that
+#   the transport ended. A clean EOF without a finish, a malformed event, an
+#   error event, `length` (budget exhausted mid-review) or any other finish
+#   are failures — text that did arrive is preserved to $5 so nothing is
+#   lost, but nothing is laundered into success (Codex R2+R3, 2026-09-06).
+# partial mode:  writes salvaged text to $5, prints "PARTIAL <chars>", exit 0.
+# Usage is written BEFORE any verdict so a failed run still shows its cost.
+parse_openrouter_response() {
+  python3 - "$1" "$2" "$3" "$4" "$5" "$6" <<'PYEOF'
+import json, sys
+raw_path, http_code, label, usage_path, partial_path, mode = sys.argv[1:7]
+raw = open(raw_path, "rb").read().decode("utf-8", "replace")
+stripped = raw.lstrip()
+content, usage, served, err = [], {}, None, None
+was_stream, malformed, parse_note = False, 0, ""
+# Terminal state of CHOICE 0 — the one review we return (Codex R3, 2026-09-06):
+# the FIRST finish_reason is binding (a later `stop` cannot launder an earlier
+# `length`), content after the finish is a defect, and any other choice index
+# is unexpected. `[DONE]` only proves the transport ended, never success.
+finish, content_after_finish, unexpected_choice = None, False, False
+
+def take_choice(ch, text_of):
+    global finish, content_after_finish, unexpected_choice
+    if (ch.get("index") or 0) != 0:
+        unexpected_choice = True
+        return
+    piece = text_of(ch) or ""
+    if piece:
+        if finish is not None:
+            content_after_finish = True
+        content.append(piece)
+    fr = ch.get("finish_reason")
+    if fr and finish is None:
+        finish = fr
+
+if stripped.startswith("{"):
+    try:
+        data = json.loads(stripped)
+    except Exception as e:
+        if mode == "complete":
+            print(f"[COUNCIL-ADVISOR-FAILURE] {label}: HTTP {http_code}, body is not JSON ({e}).")
+            sys.exit(3)
+        data, parse_note = {}, f" (body is not JSON: {e})"
+    err = data.get("error")
+    if not err and data.get("choices"):          # non-streaming shape: a parsed body IS the completion
+        served, usage = data.get("model"), data.get("usage") or {}
+        for ch in data["choices"]:
+            take_choice(ch, lambda c: (c.get("message") or {}).get("content"))
+else:                                              # SSE
+    was_stream = True
+    for line in raw.splitlines():
+        if not line.startswith("data:"):
+            continue                                # keep-alive comments start with ':'
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(payload)
+        except Exception:
+            malformed += 1                          # complete mode: any malformed data: event fails the seat
+            continue
+        if chunk.get("error"):
+            err = chunk["error"]; break             # handled below — after usage + salvage
+        served = chunk.get("model") or served
+        if chunk.get("usage"):
+            usage = chunk["usage"]                  # usage-only trailing events are legitimate
+        for ch in chunk.get("choices") or []:
+            take_choice(ch, lambda c: (c.get("delta") or {}).get("content"))
+
+text = "".join(content)
+reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
+with open(usage_path, "w") as f:                   # written BEFORE any verdict: a failed run still shows its cost
+    f.write(f"model_served={served or '?'} http={http_code} finish_reason={finish} "
+            f"prompt_tokens={usage.get('prompt_tokens', '?')} completion_tokens={usage.get('completion_tokens', '?')} "
+            f"reasoning_tokens={reasoning} cost_usd={usage.get('cost', '?')} chars={len(text)}\n")
+
+def preserve():
+    if not text.strip():
+        return ""
+    with open(partial_path, "w") as f:
+        f.write(text if text.endswith("\n") else text + "\n")
+    return f" {len(text)} chars preserved in {partial_path}."
+
+if mode == "partial":
+    # Salvage runs BEFORE the HTTP-code check: a timed-out curl reports no code
+    # (000), and that must not stop the text that did arrive from being kept.
+    preserve()
+    if err:
+        print(f"note: error object in body: {err}", file=sys.stderr)
+    if parse_note:
+        print(f"note:{parse_note}", file=sys.stderr)
+    print(f"PARTIAL {len(text)}")
+    sys.exit(0)
+
+def fail(reason):
+    print(f"[COUNCIL-ADVISOR-FAILURE] {label}: {reason}.{preserve()}")
+    sys.exit(3)
+
+if err or not http_code.startswith("2"):
+    msg = err.get("message", "?") if isinstance(err, dict) else (str(err) if err else stripped[:200])
+    fail(f"HTTP {http_code}: {msg}")
+if malformed:
+    fail(f"stream carried {malformed} malformed event(s)")
+if unexpected_choice:
+    fail("stream carried a choice index other than 0")
+if content_after_finish:
+    fail(f"content arrived after finish_reason={finish}")
+if finish == "length" and not text.strip() and reasoning:
+    fail(f"starved: {reasoning} reasoning tokens, empty content (finish_reason=length). "
+         f"Raise COUNCIL_OPENROUTER_MAX_TOKENS or lower COUNCIL_OPENROUTER_EFFORT")
+if finish not in (None, "stop"):
+    hint = " Raise COUNCIL_OPENROUTER_MAX_TOKENS or lower COUNCIL_OPENROUTER_EFFORT" if finish == "length" else ""
+    fail(f"finish_reason={finish} — the review did not complete.{hint}")
+if was_stream and finish != "stop":
+    fail("stream ended without a successful finish_reason for choice 0 ([DONE] alone is not completion)")
+if not text.strip():
+    fail(f"returned empty content (finish_reason={finish})")
+sys.stdout.write(text if text.endswith("\n") else text + "\n")
+PYEOF
+}
+
+# One seat, one HTTPS call. Files (all under $TMPDIR_COUNCIL, slug-prefixed):
+#   <slug>_request.json  the payload actually sent (key-free by construction)
+#   <slug>_raw.json      the verbatim capture (SSE stream or JSON error body)
+#   <slug>_usage.log     served model / tokens / reasoning tokens / USD cost
+#   <slug>_partial.md    text salvaged from a timed-out stream (when any)
+#   <slug>_response.md   the review, or a [COUNCIL-ADVISOR-FAILURE] placeholder
+# The API key travels ONLY via a mode-600 mktemp header file in the user's
+# private $TMPDIR passed as `-H @file` (never on argv, never in the payload),
+# removed by an EXIT trap so a killed subshell cannot leave it behind.
+# curl exit 28 (--max-time) is normalized to 124 like the CLI lanes.
+invoke_openrouter_seat() {
+  local seat="$1" model="$2" out_file="$3" err_file="$4"
+  local label slug payload raw usage_file partial hdr http_code status=0 salvage
+  label="$(seat_label "$seat")"; slug="$(seat_slug "$seat")"
+  payload="$TMPDIR_COUNCIL/${slug}_request.json"
+  raw="$TMPDIR_COUNCIL/${slug}_raw.json"
+  usage_file="$TMPDIR_COUNCIL/${slug}_usage.log"
+  partial="$TMPDIR_COUNCIL/${slug}_partial.md"
+  if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+    echo "[COUNCIL-ADVISOR-FAILURE] $label: OPENROUTER_API_KEY is not set." > "$out_file"
+    echo "$label: OPENROUTER_API_KEY is not set." >&2
+    return 1
+  fi
+  # Payload built by python so the prompt is never shell-escaped. The driver
+  # line rides in the USER turn as well as the system turn: on the 2026-09-06
+  # probe Qwen ignored a system-only VERDICT demand.
+  # (heredoc feeds python's stdin; the `|| { … }` after the terminator handles
+  # a non-zero exit — valid bash 3.2, just unusual to read.)
+  python3 - "$PROMPT_FILE_FINAL" "$model" "$COUNCIL_OPENROUTER_EFFORT" "$COUNCIL_OPENROUTER_MAX_TOKENS" > "$payload" <<'PYEOF' || {
+import json, sys
+prompt = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+model, effort, max_tokens = sys.argv[2], sys.argv[3], int(sys.argv[4])
+driver = ("You are one seat on a multi-model engineering review council. Respond fully to the "
+          "review request below. Start your response with a VERDICT: line. Keep internal reasoning "
+          "brief - spend the budget on the written review.")
+body = {
+    "model": model,
+    "max_tokens": max_tokens,
+    "stream": True,
+    "usage": {"include": True},
+    "messages": [
+        {"role": "system", "content": driver},
+        {"role": "user", "content": driver + "\n\n---\n\n" + prompt},
+    ],
+}
+if effort != "none":
+    body["reasoning"] = {"effort": effort}
+json.dump(body, sys.stdout)
+PYEOF
+    echo "[COUNCIL-ADVISOR-FAILURE] $label: could not build the request payload." > "$out_file"
+    return 1
+  }
+  hdr="$(mktemp "${TMPDIR:-/tmp}/council_or_hdr.XXXXXX")"   # mktemp → mode 600
+  # The trap fires at SUBSHELL exit, after this function's locals are gone —
+  # under `set -u` a local in the trap string is an unbound-variable death
+  # (live 2026-09-06: every seat exited 1 AFTER a good response). Park the
+  # path in a subshell-scoped global the trap can always read.
+  OPENROUTER_HDR_FILE="$hdr"
+  trap 'rm -f "${OPENROUTER_HDR_FILE:-}"' EXIT
+  printf 'Authorization: Bearer %s\n' "$OPENROUTER_API_KEY" > "$hdr"
+  http_code="$(curl -sS -N --max-time "$TIMEOUT_SECS" -o "$raw" -w '%{http_code}' \
+      -H "@$hdr" -H 'Content-Type: application/json' \
+      --data-binary "@$payload" "$OPENROUTER_URL" 2>"$err_file")" || status=$?
+  rm -f "$hdr"
+  if [[ "$status" -eq 28 ]]; then
+    salvage="$(parse_openrouter_response "$raw" "${http_code:-000}" "$label" "$usage_file" "$partial" partial 2>/dev/null || true)"
+    salvage="${salvage#PARTIAL }"
+    echo "$label timed out after ${TIMEOUT_SECS}s (COUNCIL_TIMEOUT); ${salvage:-0} chars salvaged." >&2
+    if [[ "${salvage:-0}" -gt 0 ]]; then
+      echo "[COUNCIL-ADVISOR-FAILURE] $label timed out (COUNCIL_TIMEOUT=${TIMEOUT_SECS}s) after streaming ${salvage} chars — partial text preserved in $partial. Raise COUNCIL_TIMEOUT or lower COUNCIL_OPENROUTER_EFFORT." > "$out_file"
+    else
+      echo "[COUNCIL-ADVISOR-FAILURE] $label timed out (COUNCIL_TIMEOUT=${TIMEOUT_SECS}s) with no text streamed. Raise COUNCIL_TIMEOUT or lower COUNCIL_OPENROUTER_EFFORT." > "$out_file"
+    fi
+    [[ -s "$usage_file" ]] && echo "$label usage: $(cat "$usage_file")" >&2
+    return 124
+  elif [[ "$status" -ne 0 ]]; then
+    echo "$label transport failed (curl exit $status). See $err_file" >&2
+    echo "[COUNCIL-ADVISOR-FAILURE] $label transport failed (curl exit $status). See $err_file." > "$out_file"
+    return "$status"
+  fi
+  status=0
+  parse_openrouter_response "$raw" "$http_code" "$label" "$usage_file" "$partial" complete > "$out_file" || status=$?
+  [[ -s "$usage_file" ]] && echo "$label usage: $(cat "$usage_file")" >&2
+  return "$status"
+}
+
 # Test seam (must come AFTER function definitions, BEFORE flag parsing).
 if [[ "${COUNCIL_SOURCE_ONLY:-}" == "1" ]]; then
   return 0 2>/dev/null || exit 0
@@ -565,6 +869,8 @@ RUN_CODEX=true
 RUN_GEMINI=true
 CONTEXT_FILE=""
 ALLOW_UNSANDBOXED_GEMINI=false
+OPENROUTER_SEATS_FLAG=""
+OPENROUTER_ONLY=false
 
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
@@ -585,6 +891,16 @@ while [[ "${1:-}" == --* ]]; do
       # the caller explicitly accepts the risk via this flag. The Phase A
       # diff safety net is still the backstop in that mode.
       ALLOW_UNSANDBOXED_GEMINI=true
+      shift
+      ;;
+    --openrouter)
+      OPENROUTER_SEATS_FLAG="${2:?--openrouter requires a comma-separated seat list (qwen,glm,vendor/model)}"
+      shift 2
+      ;;
+    --openrouter-only)
+      RUN_CODEX=false
+      RUN_GEMINI=false
+      OPENROUTER_ONLY=true
       shift
       ;;
     *)
@@ -621,6 +937,80 @@ TIMEOUT_SECS="${COUNCIL_TIMEOUT:-600}"
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-8m}"
 COUNCIL_GEMINI_BACKEND="${COUNCIL_GEMINI_BACKEND:-auto}"
 COUNCIL_GEMINI_MODEL="${COUNCIL_GEMINI_MODEL:-}"
+
+# --- OpenRouter seats (v1.6.0): flag beats env; comma-separated; de-duplicated;
+# an unknown bare name fails HERE, before any advisor is launched. Named seats
+# resolve against the LIVE listing (newest flagship); the source of every id
+# is recorded so the banner can say "listing" / "override" / "FALLBACK".
+COUNCIL_OPENROUTER_SEATS="${OPENROUTER_SEATS_FLAG:-${COUNCIL_OPENROUTER_SEATS:-}}"
+COUNCIL_OPENROUTER_EFFORT="${COUNCIL_OPENROUTER_EFFORT:-${COUNCIL_CODEX_EFFORT:-medium}}"
+COUNCIL_OPENROUTER_MAX_TOKENS="${COUNCIL_OPENROUTER_MAX_TOKENS:-$OPENROUTER_MAX_TOKENS_DEFAULT}"
+SEAT_NAMES=(); SEAT_MODELS=(); SEAT_SOURCES=(); SEAT_OUTS=(); SEAT_ERRS=(); SEAT_PIDS=(); SEAT_STATUS=(); SEAT_REASONS=()
+OPENROUTER_LISTING_FILE=""
+OPENROUTER_LISTING_NOTE=""
+if [[ -n "$COUNCIL_OPENROUTER_SEATS" ]]; then
+  case "$COUNCIL_OPENROUTER_EFFORT" in
+    none|minimal|low|medium|high|xhigh) ;;
+    *) echo "ERROR: COUNCIL_OPENROUTER_EFFORT='$COUNCIL_OPENROUTER_EFFORT' — use none|minimal|low|medium|high|xhigh." >&2; exit 1 ;;
+  esac
+  command -v curl &>/dev/null    || { echo "ERROR: OpenRouter seats need 'curl' in PATH." >&2; exit 1; }
+  # `-H @file` (how the key travels) needs curl >= 7.55; older curl would send the
+  # literal string and fail with a 401 mid-run instead of here.
+  curl --version 2>/dev/null | awk 'NR==1{split($2,v,"."); if (v[1]>7 || (v[1]==7 && v[2]>=55)) exit 0; exit 1}' \
+    || { echo "ERROR: OpenRouter seats need curl >= 7.55 (found: $(curl --version 2>/dev/null | head -1))." >&2; exit 1; }
+  command -v python3 &>/dev/null || { echo "ERROR: OpenRouter seats need 'python3' in PATH." >&2; exit 1; }
+  [[ -n "${OPENROUTER_API_KEY:-}" ]] || { echo "ERROR: OpenRouter seats requested but OPENROUTER_API_KEY is not set (export it in ~/.zshenv; never paste it into a prompt)." >&2; exit 1; }
+  _seats=()
+  IFS=',' read -ra _seats <<< "$COUNCIL_OPENROUTER_SEATS"
+  _needs_listing=false
+  for _s in "${_seats[@]}"; do
+    _s="$(printf '%s' "$_s" | tr -d '[:space:]')"
+    case "$_s" in
+      qwen) [[ -n "${COUNCIL_QWEN_MODEL:-}" ]] || _needs_listing=true ;;
+      glm)  [[ -n "${COUNCIL_GLM_MODEL:-}" ]]  || _needs_listing=true ;;
+    esac
+  done
+  if [[ "$_needs_listing" == "true" ]]; then
+    OPENROUTER_LISTING_FILE="$(mktemp "${TMPDIR:-/tmp}/council_openrouter_models.XXXXXX")"
+    _listing_err="$(mktemp "${TMPDIR:-/tmp}/council_openrouter_models_err.XXXXXX")"
+    if ! fetch_openrouter_listing "$OPENROUTER_LISTING_FILE" "$_listing_err"; then
+      rm -f "$OPENROUTER_LISTING_FILE"; OPENROUTER_LISTING_FILE=""
+      OPENROUTER_LISTING_NOTE="OpenRouter model listing unreachable ($(head -1 "$_listing_err" 2>/dev/null | cut -c1-120)) — named seats use LAST-KNOWN ids (fallback pins), not necessarily the newest."
+      echo "WARNING: $OPENROUTER_LISTING_NOTE" >&2
+    fi
+    rm -f "$_listing_err"
+  fi
+  for _s in "${_seats[@]}"; do
+    _s="$(printf '%s' "$_s" | tr -d '[:space:]')"
+    [[ -z "$_s" ]] && continue
+    _dup=false
+    for _n in ${SEAT_NAMES[@]+"${SEAT_NAMES[@]}"}; do [[ "$_n" == "$_s" ]] && _dup=true; done
+    [[ "$_dup" == "true" ]] && continue
+    _resolved="$(resolve_openrouter_seat_model "$_s" "$OPENROUTER_LISTING_FILE")" || {
+      echo "ERROR: unknown OpenRouter seat '$_s' — use qwen, glm, or a raw vendor/model id." >&2
+      exit 1
+    }
+    _m="${_resolved%%$'\t'*}"; _src="${_resolved##*$'\t'}"
+    if [[ "$_src" == "fallback" && -n "$OPENROUTER_LISTING_FILE" ]]; then
+      echo "WARNING: no model on the listing matched the '$_s' family rule — using last-known id $_m. Update the rule in council_invoke.sh." >&2
+      _src="fallback-nomatch"
+    fi
+    # GLM #1 (2026-09-06): two raw ids can slug to the same filename
+    # (vendor/a_b vs vendor/a/b → both vendor_a_b) and silently overwrite each other's files.
+    _slug="$(seat_slug "$_s")"
+    for _n in ${SEAT_NAMES[@]+"${SEAT_NAMES[@]}"}; do
+      [[ "$(seat_slug "$_n")" == "$_slug" ]] && { echo "ERROR: seats '$_n' and '$_s' collide on output filename '${_slug}_*' — rename one." >&2; exit 1; }
+    done
+    SEAT_NAMES+=("$_s"); SEAT_MODELS+=("$_m"); SEAT_SOURCES+=("$_src")
+  done
+  [[ -n "$OPENROUTER_LISTING_FILE" ]] && rm -f "$OPENROUTER_LISTING_FILE"
+fi
+RUN_OPENROUTER=false
+[[ "${#SEAT_NAMES[@]}" -gt 0 ]] && RUN_OPENROUTER=true
+if [[ "$OPENROUTER_ONLY" == "true" && "$RUN_OPENROUTER" != "true" ]]; then
+  echo "ERROR: --openrouter-only needs at least one seat (--openrouter qwen,glm or COUNCIL_OPENROUTER_SEATS)." >&2
+  exit 1
+fi
 
 # Resolve the Gemini backend ONCE (Council R1) — banner, availability checks,
 # and the dispatcher all read this. `auto` prefers gemini-cli only when BOTH a
@@ -694,8 +1084,10 @@ if [[ "$RUN_CODEX" == "true" && "$RUN_GEMINI" == "true" ]]; then
   DIR_LABEL="full"
 elif [[ "$RUN_CODEX" == "true" ]]; then
   DIR_LABEL="codex"
-else
+elif [[ "$RUN_GEMINI" == "true" ]]; then
   DIR_LABEL="gemini"
+else
+  DIR_LABEL="openrouter"
 fi
 TMPDIR_COUNCIL="${WORK_DIR}/.council-tmp/council_${DIR_LABEL}_${TIMESTAMP}"
 mkdir -p "$TMPDIR_COUNCIL"
@@ -711,6 +1103,12 @@ CODEX_OUT="$TMPDIR_COUNCIL/codex_response.md"
 GEMINI_OUT="$TMPDIR_COUNCIL/gemini_response.md"
 CODEX_ERR="$TMPDIR_COUNCIL/codex_error.log"
 GEMINI_ERR="$TMPDIR_COUNCIL/gemini_error.log"
+for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+  _slug="$(seat_slug "${SEAT_NAMES[$i]}")"
+  SEAT_OUTS[$i]="$TMPDIR_COUNCIL/${_slug}_response.md"
+  SEAT_ERRS[$i]="$TMPDIR_COUNCIL/${_slug}_error.log"
+  SEAT_STATUS[$i]=0; SEAT_REASONS[$i]=""
+done
 
 # Unsandboxed agy → the snapshot is the ONLY ghost-write guard; force paranoid
 # (content-hash ignored files) so same-size in-place rewrites are still caught.
@@ -725,8 +1123,15 @@ if [[ "$RUN_CODEX" == "true" && "$RUN_GEMINI" == "true" ]]; then
   MODE="Full Council"
 elif [[ "$RUN_CODEX" == "true" ]]; then
   MODE="Codex-only"
-else
+elif [[ "$RUN_GEMINI" == "true" ]]; then
   MODE="Gemini-only"
+else
+  MODE="OpenRouter-only"
+fi
+if [[ "$RUN_OPENROUTER" == "true" ]]; then
+  _seat_list="$(IFS=,; echo "${SEAT_NAMES[*]}")"
+  [[ "$MODE" == "OpenRouter-only" ]] || MODE="$MODE + OpenRouter"
+  MODE="$MODE ($_seat_list)"
 fi
 
 # Capture CLI versions for the banner (1.3.0+: forensic continuity per
@@ -751,6 +1156,19 @@ echo "Invoking The Council ($MODE)..."
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini backend: $COUNCIL_GEMINI_BACKEND_RESOLVED"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini model:   $GEMINI_MODEL_DISPLAY"
 [[ "$RUN_GEMINI" == "true" ]] && echo "  Gemini CLI:     ${GEMINI_VERSION_DISPLAY:-unknown}"
+for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+  case "${SEAT_SOURCES[$i]}" in
+    listing)  _src_note="newest on the live listing" ;;
+    override) _src_note="explicit id via COUNCIL_*_MODEL" ;;
+    raw)      _src_note="raw vendor/model id" ;;
+    fallback) _src_note="FALLBACK last-known id — listing unavailable" ;;
+    fallback-nomatch) _src_note="FALLBACK last-known id — listing loaded but nothing matched the family rule; update the rule" ;;
+    *)        _src_note="${SEAT_SOURCES[$i]}" ;;
+  esac
+  echo "  OpenRouter seat: $(seat_label "${SEAT_NAMES[$i]}") → ${SEAT_MODELS[$i]} ($_src_note)"
+done
+[[ -n "$OPENROUTER_LISTING_NOTE" ]] && echo "  WARNING: $OPENROUTER_LISTING_NOTE"
+[[ "$RUN_OPENROUTER" == "true" ]] && echo "  OpenRouter effort/max_tokens: ${COUNCIL_OPENROUTER_EFFORT} / ${COUNCIL_OPENROUTER_MAX_TOKENS} (COUNCIL_OPENROUTER_EFFORT / COUNCIL_OPENROUTER_MAX_TOKENS)"
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s ($([[ -n "$TIMEOUT_CMD" ]] && echo "$TIMEOUT_CMD" || echo "bash watchdog"))"
 # Agy-specific banner lines: only meaningful when the resolved backend is agy
@@ -777,7 +1195,10 @@ GEMINI_PID=""
 if [[ "$RUN_CODEX" == "true" ]]; then
   (
     cd "$WORK_DIR"
-    CODEX_ARGS=(exec --sandbox read-only -c approval_policy=never -o "$CODEX_OUT")
+    # --skip-git-repo-check: the skill's isolated-scratch-workspace mode runs in a
+    # non-repo dir, where codex otherwise refuses ("Not inside a trusted directory",
+    # live 2026-09-06). Harmless under --sandbox read-only.
+    CODEX_ARGS=(exec --sandbox read-only --skip-git-repo-check -c approval_policy=never -o "$CODEX_OUT")
     if [[ -n "$CODEX_MODEL" ]]; then
       CODEX_ARGS+=(-m "$CODEX_MODEL")
     fi
@@ -825,6 +1246,15 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
   GEMINI_PID=$!
 fi
 
+# --- Invoke OpenRouter seats (HTTPS, inlined prompt, no repo access) ---
+for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+  (
+    cd "$TMPDIR_COUNCIL" || exit 1
+    invoke_openrouter_seat "${SEAT_NAMES[$i]}" "${SEAT_MODELS[$i]}" "${SEAT_OUTS[$i]}" "${SEAT_ERRS[$i]}"
+  ) &
+  SEAT_PIDS[$i]=$!
+done
+
 # --- Wait for advisors ---
 CODEX_STATUS=0
 GEMINI_STATUS=0
@@ -835,6 +1265,9 @@ fi
 if [[ -n "$GEMINI_PID" ]]; then
   wait "$GEMINI_PID" || GEMINI_STATUS=$?
 fi
+for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+  wait "${SEAT_PIDS[$i]}" || SEAT_STATUS[$i]=$?
+done
 
 # --- Validate responses ---
 CODEX_FAIL_REASON=""
@@ -861,6 +1294,22 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
   fi
 fi
 
+for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+  _label="$(seat_label "${SEAT_NAMES[$i]}")"
+  if ! validate_response "${SEAT_OUTS[$i]}" "${SEAT_ERRS[$i]}" "${SEAT_STATUS[$i]}" "$PROMPT_BYTES" "$_label"; then
+    SEAT_REASONS[$i]="$VALIDATE_REASON"
+    SEAT_STATUS[$i]=1
+    echo "$_label failed validation ($VALIDATE_REASON). See ${SEAT_ERRS[$i]}" >&2
+  else
+    SEAT_STATUS[$i]=0
+  fi
+done
+SEAT_PATHS_DISPLAY=""
+for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+  SEAT_PATHS_DISPLAY="${SEAT_PATHS_DISPLAY}  $(seat_label "${SEAT_NAMES[$i]}"): ${SEAT_OUTS[$i]}
+"
+done
+
 # --- Phase A safety net: snapshot $WORK_DIR AFTER invocation and diff ---
 # Fails closed (exit 2) on any unauthorized worktree change. The diff
 # excludes .council-tmp/ (where response files legitimately land); any
@@ -886,7 +1335,7 @@ After:  $WORKTREE_SNAPSHOT_AFTER
 Advisor responses (still readable):
   Codex:  $CODEX_OUT
   Gemini: $GEMINI_OUT
-
+${SEAT_PATHS_DISPLAY}
 Review the diff carefully before integrating any advisor recommendations.
 =====================================================================
 
@@ -907,6 +1356,11 @@ if [[ "$RUN_GEMINI" == "true" ]]; then
   [[ "$GEMINI_STATUS" -ne 0 ]] && STATUS_MSG="(failed${GEMINI_FAIL_REASON:+: $GEMINI_FAIL_REASON})"
   echo "  Gemini: $GEMINI_OUT $STATUS_MSG"
 fi
+for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+  STATUS_MSG="(success)"
+  [[ "${SEAT_STATUS[$i]}" -ne 0 ]] && STATUS_MSG="(failed${SEAT_REASONS[$i]:+: ${SEAT_REASONS[$i]}})"
+  echo "  $(seat_label "${SEAT_NAMES[$i]}"): ${SEAT_OUTS[$i]} $STATUS_MSG"
+done
 echo ""
 
 # Output the paths for the caller to read
@@ -916,6 +1370,9 @@ fi
 if [[ "$RUN_GEMINI" == "true" ]]; then
   echo "$GEMINI_OUT"
 fi
+for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+  echo "${SEAT_OUTS[$i]}"
+done
 
 # --- Aggregate exit (v1.4.0) ---
 # 0 = every requested advisor produced a validated response
@@ -924,4 +1381,7 @@ fi
 FINAL_STATUS=0
 [[ "$RUN_CODEX" == "true" && "$CODEX_STATUS" -ne 0 ]] && FINAL_STATUS=1
 [[ "$RUN_GEMINI" == "true" && "$GEMINI_STATUS" -ne 0 ]] && FINAL_STATUS=1
+for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+  [[ "${SEAT_STATUS[$i]}" -ne 0 ]] && FINAL_STATUS=1
+done
 exit "$FINAL_STATUS"
