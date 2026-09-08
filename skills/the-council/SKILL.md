@@ -108,8 +108,8 @@ Four decisions this step makes, all load-bearing:
    statements. Low by default — its work is mechanical, and effort does not make a grep more true.
    Reserve **high** for the merge of a stage that ships a fix, where the question becomes "does this
    close the class, or only the named trigger?"
-2. **The Codex seat is `gpt-6-astra`** (Tom 2026-09-06; supersedes `gpt-5.6-sol`). On native failure the OpenRouter fallback is
-   `openai/gpt-6-astra` — never a lesser variant (not `-pro`, not a Sol or Codex-family id). Sol-era evidence: in the source session `gpt-5.3-codex` returned
+2. **Codex seat = `gpt-5.6-sol`** (Tom 2026-09-08; Astra retired for cost — it consumed usage and OpenRouter spend far faster with no measured review gain). On native failure the OpenRouter fallback is
+   `openai/gpt-5.6-sol` — never a lesser variant (not `-pro`, not a Codex-family id). Sol-era evidence: in the source session `gpt-5.3-codex` returned
    REVISE and `gpt-5.6-sol` returned RESTRUCTURE on the *identical prompt*, with three critical
    findings no other reviewer produced. **Model choice changed the verdict.** Never resolve a model
    id from a truncated listing — list the full family and grep it.
@@ -185,7 +185,7 @@ Write the composed prompt to a temporary file. Include all relevant context inli
    Without this, Council issues strict text-literal REVISE verdicts the
    owner then overrules (2026-05-13 charter-as-decree incident).
 
-4. **Nitpick suppression** (every Codex model — measured on gpt-5.6-sol, kept on for gpt-6-astra until measured otherwise): Sol over-flagged (CodeRabbit
+4. **Nitpick suppression** (every Codex model — measured on gpt-5.6-sol): Sol over-flagged (CodeRabbit
    benchmark: 31.6% actionable precision). Instruct: "Rank findings by
    severity. Suppress low-confidence nitpicks; report only findings you
    would defend in review."
@@ -294,7 +294,7 @@ bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
 ```
 
 **Environment overrides:**
-- `CODEX_MODEL` — default: from `~/.codex/config.toml` (standard: gpt-6-astra, Tom 2026-09-06)
+- `CODEX_MODEL` — default: from `~/.codex/config.toml` (standard: gpt-5.6-sol, Tom 2026-09-08)
 - `COUNCIL_CODEX_EFFORT` — default: `medium`. **Effort follows the review tier (Tom 2026-08-20): `medium` routine / `high` hard-to-reverse / `xhigh` milestone-only.** Set explicitly per invocation when the tier calls for more; `config` defers to config.toml. Blanket xhigh is retired — it burned native quota + OpenRouter spend on routine diffs.
 - `COUNCIL_TIMEOUT` — default: `600` (seconds per advisor; raise to 900 for very large xhigh reviews)
 - `COUNCIL_GEMINI_BACKEND` — default: `auto` (`gemini` | `agy`)
@@ -523,8 +523,8 @@ Either (a) an advisor sandbox escape (rare — investigate as a real security is
 
 ## Model and Effort Configuration
 
-- **Codex**: model from `~/.codex/config.toml` (standard: `gpt-6-astra`,
-  Tom 2026-09-06), overridable via `CODEX_MODEL`. Reasoning effort is set
+- **Codex**: model from `~/.codex/config.toml` (standard: `gpt-5.6-sol`,
+  Tom 2026-09-08), overridable via `CODEX_MODEL`. Reasoning effort is set
   EXPLICITLY by the script: `-c model_reasoning_effort=medium` by default
   (`COUNCIL_CODEX_EFFORT` to change). Nitpick note: Sol had the highest review recall of any
   model measured but over-flagged nitpicks — the prompt templates keep the
@@ -552,7 +552,7 @@ Two different things share the OpenRouter account:
 
 | Seat | Model id | Notes |
 |---|---|---|
-| Codex fallback | **`openai/gpt-6-astra`** | Never a lesser variant (id confirmed on OpenRouter's listing 2026-09-06). Sol-era evidence: 5.3-codex → REVISE vs 5.6-sol → RESTRUCTURE on an identical prompt, 2026-08-04. |
+| Codex fallback | **`openai/gpt-5.6-sol`** | Never a lesser variant (id confirmed on OpenRouter's listing 2026-09-08). Sol-era evidence: 5.3-codex → REVISE vs 5.6-sol → RESTRUCTURE on an identical prompt, 2026-08-04. |
 | Qwen (milestone) | **newest `qwen/qwen<ver>-max` on the live listing** (2026-09-06: `qwen3.8-max-0902`) | Resolved by the script at launch; `max_tokens` 32000 default; starvation is detected and named. ~$0.08 per 26 KB diff review at medium. |
 | GLM (opt-in) | **newest `z-ai/glm-<ver>` on the live listing** (2026-09-06: `glm-5.3`) | Unmeasured lens; ~$0.02 per 26 KB diff review at medium. Not part of any tier by default. |
 

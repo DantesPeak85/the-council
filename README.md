@@ -74,7 +74,7 @@ The council is also invoked proactively during high-stakes architectural decisio
 
 **Codex** (`~/.codex/config.toml`) — set your preferred model:
 ```toml
-model = "gpt-6-astra"
+model = "gpt-5.6-sol"
 ```
 Reasoning effort is set by the invoke script (`COUNCIL_CODEX_EFFORT=xhigh` by default), so you do **not** need `model_reasoning_effort` in config. Set `COUNCIL_CODEX_EFFORT=config` if you'd rather the script defer to `config.toml`.
 
