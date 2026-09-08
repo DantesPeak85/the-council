@@ -54,9 +54,9 @@ Everything else in the doc is open to revision.
 Without this, Council issues strict text-literal REVISE verdicts the owner
 then overrules (2026-05-13 charter-as-decree incident).
 
-### 4. Nitpick suppression (every Codex model — measured on gpt-5.6-sol, kept on for gpt-6-astra)
+### 4. Nitpick suppression (every Codex model — measured on gpt-5.6-sol)
 
-Sol over-flagged (CodeRabbit benchmark: 31.6% actionable precision); Astra is unmeasured, so keep it on. Instruct:
+Sol over-flagged (CodeRabbit benchmark: 31.6% actionable precision). Instruct:
 
 ```text
 Rank findings by severity. Suppress low-confidence nitpicks; report only findings you would defend in review.
