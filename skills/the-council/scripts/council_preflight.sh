@@ -2,7 +2,7 @@
 # council_preflight.sh — Check CLI availability and authentication
 # Exit codes: 0 = at least one advisor available+authenticated, 1 = none
 # Outputs key=value status lines to stdout.
-# Caches result in .council-tmp/preflight_cache_v3 for session reuse.
+# Caches result in .council-tmp/preflight_cache_v4 for session reuse.
 #
 # Gemini facts are reported INDEPENDENTLY (v1.4.0). The invoke script resolves a
 # backend at runtime (gemini CLI when GEMINI_API_KEY is set, else agy), so agy
@@ -12,8 +12,8 @@
 #   GEMINI_CLI_AVAILABLE   — Google `gemini` CLI present
 #   GEMINI_API_KEY_SET     — GEMINI_API_KEY or GOOGLE_API_KEY exported
 #   GEMINI_AUTHENTICATED   — credentials present AND >=1 backend binary present
-# OpenRouter seats (v1.6.0) are optional extra advisors; they never make the
-# preflight pass on their own:
+# Qwen through OpenRouter is the default reviewer (v1.6.2), so it can make the
+# preflight pass on its own:
 #   OPENROUTER_API_KEY_SET — OPENROUTER_API_KEY exported
 #   OPENROUTER_AVAILABLE   — key set AND curl AND python3 present
 #
@@ -26,9 +26,9 @@ WORK_DIR="${1:-.}"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
 mkdir -p "${WORK_DIR}/.council-tmp"
-# v3 schema (1.6.0 adds the OpenRouter facts): older caches lack keys the invoke
-# docs tell callers to read, so the filename is bumped rather than reused.
-CACHE_FILE="${WORK_DIR}/.council-tmp/preflight_cache_v3"
+# v4 semantics: OpenRouter alone now satisfies preflight, so an older cached
+# PREFLIGHT_EXIT cannot be replayed safely.
+CACHE_FILE="${WORK_DIR}/.council-tmp/preflight_cache_v4"
 
 # Invalidate if the Codex config changed since the cache was written — auth/model
 # fixed mid-session must not stay invisible for the 2-hour TTL.
@@ -111,7 +111,7 @@ if [[ "$GEMINI_CREDENTIALS" == "true" && "$GEMINI_INSTALLED" == "true" ]]; then
   GEMINI_AUTHENTICATED=true
 fi
 
-# --- OpenRouter seats: key + transport. Optional; never satisfies the gate alone.
+# --- Default Qwen seat: key + transport.
 if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
   OPENROUTER_API_KEY_SET=true
   if command -v curl &>/dev/null && command -v python3 &>/dev/null; then
@@ -120,7 +120,7 @@ if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
 fi
 
 # At least one advisor must be ready.
-if [[ "$CODEX_AUTHENTICATED" == "true" || "$GEMINI_AUTHENTICATED" == "true" ]]; then
+if [[ "$OPENROUTER_AVAILABLE" == "true" || "$CODEX_AUTHENTICATED" == "true" || "$GEMINI_AUTHENTICATED" == "true" ]]; then
   PREFLIGHT_EXIT=0
 else
   PREFLIGHT_EXIT=1

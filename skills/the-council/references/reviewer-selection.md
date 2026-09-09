@@ -11,9 +11,9 @@ session that finds it inconvenient.
 
 | Tier | What it covers | Panel |
 |---|---|---|
-| **Routine** | ordinary diffs, bug fixes, refactors, single-file changes | **Fable (low)** + **Codex** |
-| **Hard-to-reverse** | architecture, migrations, auth/RLS/PHI, wire contracts, any written plan | **Fable (low)** + **Codex** + **Gemini** |
-| **Milestone** | launch-gating work, initiative plans, anything an executor will build from | the above **+ Qwen**, and **Fable (high)** at merge |
+| **Routine** | ordinary diffs, bug fixes, refactors, single-file changes | **Fable (low)** + **Qwen** |
+| **Hard-to-reverse** | architecture, migrations, auth/RLS/PHI, wire contracts, any written plan | **Fable (low)** + **Qwen** + **Gemini** |
+| **Milestone** | launch-gating work, initiative plans, anything an executor will build from | the above, and **Fable (high)** at merge |
 
 Cost anchor: a full milestone panel ran ≈ **$0.57 in OpenRouter spend and ~40 minutes wall clock**.
 Against the class of defect it catches, that is not a decision that needs analysis.
@@ -36,10 +36,12 @@ The advisors reason about the text they are given. Fable re-executes the claims.
 
 ---
 
-## 2. The Codex seat: pin the model, and never read a truncated listing
+## 2. The Codex seat: optional compatibility fallback
 
-**Native default:** `gpt-5.6-sol` from `~/.codex/config.toml` (Tom 2026-09-08; Astra retired for cost), effort per review tier (medium routine / high hard-to-reverse / xhigh milestone). Verify the invoke
-banner shows both.
+Codex is no longer a default Council seat (Tom 2026-09-09). Use it explicitly
+with `--with-codex` / `--codex-only`, or as the script's loudly announced
+compatibility fallback when OpenRouter is unavailable. The fallback remains
+`gpt-5.6-sol` from `~/.codex/config.toml`.
 
 **On native failure** (429, "Quota exhausted", rate limit — read the error log, do not guess),
 fall back to OpenRouter with **`openai/gpt-5.6-sol`**.
@@ -56,11 +58,11 @@ templates carry the suppression instruction — kept on for Astra until measured
 
 ---
 
-## 3. The Qwen seat (milestone tier only) — and the opt-in GLM seat
+## 3. The Qwen seat (default) — and the opt-in GLM seat
 
-Both are **OpenRouter seats driven by the script since 1.6.0**: `--openrouter qwen`
-(milestone) or `--openrouter qwen,glm`, alone (`--openrouter-only`) or alongside the CLI
-advisors. No hand-built curl — that is how the truncated-listing wrong-model review of
+Both are **OpenRouter seats driven by the script since 1.6.0**. Qwen runs by
+default; use `--openrouter qwen,glm` to add GLM, or `--openrouter-only` for an
+OpenRouter-only panel. No hand-built curl — that is how the truncated-listing wrong-model review of
 2026-08-04 happened.
 
 - **Model: the NEWEST flagship on OpenRouter's live listing at launch** (Tom 2026-09-06):
@@ -80,9 +82,10 @@ advisors. No hand-built curl — that is how the truncated-listing wrong-model r
   medium, ~70 s. Responses stream (a NON-streaming GLM request sat 9 minutes receiving only
   keep-alive whitespace, then timed out), so a timeout still leaves `<seat>_partial.md`.
 
-Qwen is the third-best of the three advisors on average but consistently finds **absences** — the
-gate nobody specified, the section that quietly disappeared between drafts. That is a different
-search than either Codex or Gemini performs.
+Qwen becomes the default because it consistently finds **absences** — the gate
+nobody specified, the section that quietly disappeared between drafts—without
+consuming Codex's weekly allowance. File-dependent claims still require local
+mechanical verification because Qwen receives inline context only.
 
 ---
 
@@ -205,16 +208,16 @@ adjacent code is the point.
 ## 8. Quick reference
 
 ```
-Routine change     → Fable(low) + Codex(gpt-5.6-sol)
-Hard-to-reverse    → Fable(low) + Codex(gpt-5.6-sol) + Gemini
-Milestone / plan   → Fable(low) + Codex(gpt-5.6-sol) + Gemini + Qwen(--openrouter qwen: newest on listing, 32k tokens)
+Routine change     → Fable(low) + Qwen(default: newest flagship, 32k tokens)
+Hard-to-reverse    → Fable(low) + Qwen + Gemini
+Milestone / plan   → Fable(low) + Qwen + Gemini; Fable(high) at merge
 GLM                → opt-in only (--openrouter glm), no tier
 At merge of a stage that ships a fix → add Fable(high)
 
 Fable HIGH tiering  → T1 shell (no model) · T2 cheap delegate, low effort, RAW output
                       · T3 high, main session, judgment only
                       skip T3 if T1+T2 clean AND no fix shipped
-Codex native fails → OpenRouter openai/gpt-5.6-sol   (never a lesser variant)
+OpenRouter absent  → native Codex gpt-5.6-sol fallback, announced loudly
 Repo busy          → isolated scratch workspace
 Same root cause 2 rounds running → stop; decide
 ```

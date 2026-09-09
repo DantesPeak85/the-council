@@ -7,8 +7,8 @@
   "plugins": [
     {
       "name": "the-council",
-      "description": "Multi-model advisory board using Codex CLI and Gemini CLI",
-      "version": "1.6.1",
+      "description": "Multi-model advisory board using Qwen and Gemini by default, with optional Codex",
+      "version": "1.6.2",
       "source": "./",
       "author": {
         "name": "Tom Wolinitz"

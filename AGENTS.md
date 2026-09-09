@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-The Council is a **Claude Code Skill plugin** that convenes OpenAI Codex (`codex` CLI) and Google Gemini (`agy` CLI, Google's Antigravity client running Gemini 3.5 Flash by default) as an advisory board. Both run in parallel as effectively read-only consultants, returning independent analyses that Claude synthesizes into unified recommendations.
+The Council is a **Claude Code Skill plugin** that convenes Qwen through OpenRouter and Google Gemini as its default advisory board. Codex remains available as an explicit seat or compatibility fallback. The advisors return independent analyses that Claude synthesizes into unified recommendations.
 
 This is **not** a Node/TypeScript application — it's a pure Bash + Markdown skill with no build system, package manager, or test framework.
 
@@ -30,7 +30,7 @@ skills/the-council/
 
 **Execution flow:** Preflight → Sync context → Compose prompt from template → Invoke advisors in parallel → Synthesize responses (consensus/divergence/recommendation) → Generalize learnings into CLAUDE.md/AGENTS.md.
 
-**Operating modes** are determined by preflight: Full Council (both CLIs), Codex-only, Gemini-only, or abort (neither available).
+**Operating modes** are determined by preflight: Qwen + Gemini by default, Qwen-only, Gemini-only, explicit Codex modes, or a loudly announced Codex compatibility fallback when OpenRouter is unavailable.
 
 ## Key Design Decisions
 
@@ -63,4 +63,4 @@ All scripts use `set -euo pipefail`. Variables are quoted. Exit codes are meanin
 
 ## Temp Files
 
-Invocation creates `.council-tmp/council_<mode>_YYYYMMDD_HHMMSS/` (where `<mode>` is `full`, `codex`, or `gemini` depending on which advisors ran) in the working directory, containing `prompt_final.txt`, `review_request.md` (the sanitized Gemini request), `{codex,gemini}_response.md`, `{codex,gemini}_error.log`, any `*_warnings.log`, and the `worktree_snapshot_{before,after}.txt` + `worktree_diff.txt` safety-net files. The preflight cache lives at `.council-tmp/preflight_cache_v2`. Context sync writes `AGENTS.md` and backs up any pre-existing one inside `.council-tmp/`, so run `council_sync.sh --restore` to restore/remove it BEFORE `rm -rf .council-tmp/` (the backup lives there). Cleanup is `rm -rf .council-tmp/` — done LAST.
+Invocation creates `.council-tmp/council_<mode>_YYYYMMDD_HHMMSS/` in the working directory, containing the composed prompt, advisor responses, errors, warnings, and safety-net snapshots. The preflight cache lives at `.council-tmp/preflight_cache_v4`. Context sync backs up any pre-existing `AGENTS.md` inside `.council-tmp/`, so restore it before cleanup.
