@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# council_invoke.sh — Invoke Codex, Gemini and optional OpenRouter seats in parallel, capture responses
+# council_invoke.sh — Invoke Qwen, Gemini and optional advisor seats in parallel, capture responses
 #
-# Usage: council_invoke.sh [--codex-only|--gemini-only|--openrouter-only] [--openrouter <seats>] [--context-file <path>] <prompt_file> [working_directory]
+# Usage: council_invoke.sh [--with-codex|--codex-only|--gemini-only|--openrouter-only] [--openrouter <seats>] [--context-file <path>] <prompt_file> [working_directory]
+#   Default:              Qwen + Gemini. Codex is not invoked.
+#                         If OpenRouter is unavailable, Codex replaces Qwen as
+#                         a loudly-announced compatibility fallback.
+#   --with-codex:         Add Codex to the default Qwen + Gemini panel
 #   --codex-only:         Only invoke Codex (skip Gemini)
 #   --gemini-only:        Only invoke Gemini (skip Codex)
 #   --openrouter <seats>: Add OpenRouter seats — comma list of qwen | glm | vendor/model (v1.6.0)
@@ -11,7 +15,7 @@
 #   working_directory:    defaults to current directory
 #
 # Outputs: Paths to response files (one per line, last lines of stdout)
-#   Full mode:   codex response path, then gemini response path, then one per OpenRouter seat
+#   Full mode:   gemini response path, then Qwen, then any extra OpenRouter seats
 #   Single mode: only the active advisor's response path
 #
 # Environment:
@@ -865,21 +869,29 @@ fi
 ### EXECUTION ###
 
 # --- Parse flags ---
-RUN_CODEX=true
+RUN_CODEX=false
 RUN_GEMINI=true
 CONTEXT_FILE=""
 ALLOW_UNSANDBOXED_GEMINI=false
 OPENROUTER_SEATS_FLAG=""
 OPENROUTER_ONLY=false
+DEFAULT_MODE=true
 
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --codex-only)
+      RUN_CODEX=true
       RUN_GEMINI=false
+      DEFAULT_MODE=false
       shift
       ;;
     --gemini-only)
       RUN_CODEX=false
+      DEFAULT_MODE=false
+      shift
+      ;;
+    --with-codex)
+      RUN_CODEX=true
       shift
       ;;
     --context-file)
@@ -901,6 +913,7 @@ while [[ "${1:-}" == --* ]]; do
       RUN_CODEX=false
       RUN_GEMINI=false
       OPENROUTER_ONLY=true
+      DEFAULT_MODE=false
       shift
       ;;
     *)
@@ -924,7 +937,7 @@ if [[ -s "$NVM_DIR/nvm.sh" ]]; then
   fi
 fi
 
-PROMPT_FILE="${1:?Usage: council_invoke.sh [--codex-only|--gemini-only] <prompt_file> [working_directory]}"
+PROMPT_FILE="${1:?Usage: council_invoke.sh [--with-codex|--codex-only|--gemini-only|--openrouter-only] <prompt_file> [working_directory]}"
 WORK_DIR="${2:-.}"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
@@ -942,7 +955,22 @@ COUNCIL_GEMINI_MODEL="${COUNCIL_GEMINI_MODEL:-}"
 # an unknown bare name fails HERE, before any advisor is launched. Named seats
 # resolve against the LIVE listing (newest flagship); the source of every id
 # is recorded so the banner can say "listing" / "override" / "FALLBACK".
-COUNCIL_OPENROUTER_SEATS="${OPENROUTER_SEATS_FLAG:-${COUNCIL_OPENROUTER_SEATS:-}}"
+if [[ -n "$OPENROUTER_SEATS_FLAG" ]]; then
+  COUNCIL_OPENROUTER_SEATS="$OPENROUTER_SEATS_FLAG"
+elif [[ -n "${COUNCIL_OPENROUTER_SEATS:-}" ]]; then
+  COUNCIL_OPENROUTER_SEATS="$COUNCIL_OPENROUTER_SEATS"
+elif [[ "$DEFAULT_MODE" == "true" && -n "${OPENROUTER_API_KEY:-}" ]]; then
+  COUNCIL_OPENROUTER_SEATS="qwen"
+elif [[ "$DEFAULT_MODE" == "true" ]]; then
+  # Compatibility fallback: old installs may not have OpenRouter configured.
+  # Stay usable, but never hide that the costlier native Codex seat replaced
+  # the requested default reviewer.
+  RUN_CODEX=true
+  COUNCIL_OPENROUTER_SEATS=""
+  echo "WARNING: Qwen is the default Council reviewer, but OPENROUTER_API_KEY is not set; falling back to Codex for this run." >&2
+else
+  COUNCIL_OPENROUTER_SEATS=""
+fi
 COUNCIL_OPENROUTER_EFFORT="${COUNCIL_OPENROUTER_EFFORT:-${COUNCIL_CODEX_EFFORT:-medium}}"
 COUNCIL_OPENROUTER_MAX_TOKENS="${COUNCIL_OPENROUTER_MAX_TOKENS:-$OPENROUTER_MAX_TOKENS_DEFAULT}"
 SEAT_NAMES=(); SEAT_MODELS=(); SEAT_SOURCES=(); SEAT_OUTS=(); SEAT_ERRS=(); SEAT_PIDS=(); SEAT_STATUS=(); SEAT_REASONS=()

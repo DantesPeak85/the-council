@@ -1,18 +1,20 @@
 ---
 name: the-council
-description: Multi-model advisory board using OpenAI Codex CLI and Google Antigravity CLI (agy) to provide second opinions on code reviews, architecture plans, debugging, and general engineering decisions. Invoke when the user requests a "council" review, wants a second opinion from other AI models, asks for multi-model consensus, or says "ask the council". Also invoke proactively when making high-stakes architectural decisions or when a code review checkpoint is reached.
+description: Multi-model advisory board using Qwen through OpenRouter and Google Gemini by default, with OpenAI Codex available as an explicit or compatibility-fallback seat. Invoke when the user requests a "council" review, wants a second opinion from other AI models, asks for multi-model consensus, or says "ask the council". Also invoke proactively when making high-stakes architectural decisions or when a code review checkpoint is reached.
 ---
 
 # The Council
 
-Convene OpenAI Codex and Google Gemini as an advisory board. Both run in parallel via their CLIs — Codex with read-only codebase access, Gemini reviewing the fully-inlined request — and return independent analyses that Claude synthesizes.
+Convene Qwen and Google Gemini as the default advisory board. Both review the fully inlined request; Qwen runs through OpenRouter and Gemini through its selected CLI backend. Codex remains available through `--with-codex` / `--codex-only`, and automatically replaces Qwen with a loud warning when OpenRouter is not configured.
 
 ## Prerequisites
 
 - Project has a `CLAUDE.md` file in the working directory
-- At least one of the following CLIs installed and authenticated:
-  - `codex` CLI (`npm i -g @openai/codex`)
-  - `agy` CLI (`antigravity` CLI)
+- `OPENROUTER_API_KEY` exported for the default Qwen seat
+- A Gemini backend installed and authenticated (`gemini` with a paid API key,
+  or `agy`)
+- Optional: `codex` CLI for `--with-codex`, `--codex-only`, or the automatic
+  no-OpenRouter compatibility fallback
 
 ## Permission Setup
 
@@ -24,10 +26,9 @@ Tell the user:
 The Council needs to run bash scripts to invoke external advisors. I'll request permission for all of them now so the flow isn't interrupted.
 ```
 
-Then run all three scripts in sequence to trigger permission grants:
+Then run the two active scripts in sequence to trigger permission grants:
 1. `bash <skill_dir>/scripts/council_preflight.sh <working_directory>` — CLI availability check
-2. `bash <skill_dir>/scripts/council_sync.sh <working_directory>` — context sync
-3. `bash <skill_dir>/scripts/council_invoke.sh` (with `--help` or a no-op) — advisor invocation
+2. `bash <skill_dir>/scripts/council_invoke.sh` (with `--help` or a no-op) — advisor invocation
 
 Once permissions are granted, proceed with the workflow. The user will not be prompted again for these scripts during the session.
 
@@ -43,12 +44,12 @@ bash <skill_dir>/scripts/council_preflight.sh <working_directory>
 
 Parse the output (key=value lines) and determine the operating mode:
 
-| Codex Auth | Gemini Auth | Mode |
-|------------|-------------|------|
-| `true` | `true` | **Full Council** — both advisors in parallel |
-| `true` | `false` | **Codex-only** — single advisor mode |
-| `false` | `true` | **Gemini-only** — single advisor mode |
-| `false` | `false` | **Abort** — show installation instructions below |
+| Qwen/OpenRouter | Gemini Auth | Mode |
+|---|---|---|
+| available | `true` | **Full Council** — Qwen + Gemini in parallel |
+| available | `false` | **Qwen-only** — single advisor mode |
+| unavailable | `true` | **Gemini + Codex fallback** when Codex is available |
+| unavailable | `false` | **Codex compatibility fallback** when available; otherwise abort |
 
 **Gemini backend resolution** (v1.4.0): the invoke script picks the Gemini
 backend automatically (`COUNCIL_GEMINI_BACKEND=auto`):
@@ -59,9 +60,9 @@ backend automatically (`COUNCIL_GEMINI_BACKEND=auto`):
 | true | false | `agy` (pty-wrapped, sandboxed, single-shot) |
 | false | any | `agy` (pty-wrapped, sandboxed, single-shot) |
 
-**OpenRouter seats** (1.6.0): preflight also reports `OPENROUTER_API_KEY_SET` and
-`OPENROUTER_AVAILABLE` (key + curl + python3). They are optional extra advisors and
-never change the mode above — a machine with only an OpenRouter key still aborts.
+**OpenRouter seats** (1.6.0): preflight reports `OPENROUTER_API_KEY_SET` and
+`OPENROUTER_AVAILABLE` (key + curl + python3). Qwen is now the primary default
+reviewer, so these values do change the selected panel.
 
 Note: gemini-cli's free oauth-personal auth stopped serving 2026-06-18 — the
 gemini backend requires a paid Gemini API key (`GEMINI_API_KEY` or
@@ -76,16 +77,17 @@ oauth creds and no `agy` installed will preflight green but fail loud at invoke
 **If no advisors are available**, display this help and stop:
 
 ```
-Neither Codex nor Gemini CLI is available. To use The Council, install at least one:
+Neither Qwen/OpenRouter, Gemini, nor Codex fallback is available. To use The Council, configure at least one:
 
-  Codex:  npm i -g @openai/codex && codex auth
+  Qwen:   export OPENROUTER_API_KEY in your shell environment
   Gemini: Install agy CLI and verify it is logged in via ~/.gemini/oauth_creds.json (runs automatically on first command)
+  Codex fallback: npm i -g @openai/codex && codex auth
 ```
 
 **If one advisor is missing**, note which mode is active and proceed. Example:
 
 ```
-Council running in Codex-only mode (Gemini CLI not found).
+Council running in Qwen-only mode (Gemini CLI not found).
 ```
 
 The preflight result is cached for 2 hours — subsequent invocations skip this step automatically.
@@ -97,9 +99,9 @@ Read [references/reviewer-selection.md](references/reviewer-selection.md) and pi
 
 | Tier | What it covers | Panel |
 |---|---|---|
-| **Routine** | ordinary diffs, bug fixes, refactors | **Fable (low)** + **Codex** |
-| **Hard-to-reverse** | architecture, migrations, auth/RLS/PHI, wire contracts, any written plan | **Fable (low)** + **Codex** + **Gemini** |
-| **Milestone** | launch-gating work, initiative plans, anything an executor will build from | the above **+ Qwen**; **Fable (high)** at merge |
+| **Routine** | ordinary diffs, bug fixes, refactors | **Fable (low)** + **Qwen** |
+| **Hard-to-reverse** | architecture, migrations, auth/RLS/PHI, wire contracts, any written plan | **Fable (low)** + **Qwen** + **Gemini** |
+| **Milestone** | launch-gating work, initiative plans, anything an executor will build from | the above; **Fable (high)** at merge |
 
 Four decisions this step makes, all load-bearing:
 
@@ -108,35 +110,25 @@ Four decisions this step makes, all load-bearing:
    statements. Low by default — its work is mechanical, and effort does not make a grep more true.
    Reserve **high** for the merge of a stage that ships a fix, where the question becomes "does this
    close the class, or only the named trigger?"
-2. **Codex seat = `gpt-5.6-sol`** (Tom 2026-09-08; Astra retired for cost — it consumed usage and OpenRouter spend far faster with no measured review gain). On native failure the OpenRouter fallback is
-   `openai/gpt-5.6-sol` — never a lesser variant (not `-pro`, not a Codex-family id). Sol-era evidence: in the source session `gpt-5.3-codex` returned
-   REVISE and `gpt-5.6-sol` returned RESTRUCTURE on the *identical prompt*, with three critical
-   findings no other reviewer produced. **Model choice changed the verdict.** Never resolve a model
-   id from a truncated listing — list the full family and grep it.
-3. **Qwen (`qwen/qwen3.8-max`, milestone tier) needs `max_tokens` ≥ 32000.** At 9k it spent every
+2. **Qwen is the default advisor** (Tom 2026-09-09). It replaces the native
+   Codex seat to preserve Codex weekly usage. The script resolves the newest
+   `qwen/qwen<ver>-max` flagship at launch and records the served model and cost.
+3. **Qwen needs `max_tokens` ≥ 32000.** At 9k it spent every
    completion token on reasoning and returned empty content — `finish_reason: MAX_TOKENS`.
 4. **Isolated workspace when the repo is busy.** If another session or process is writing to the
    target repo — or the review is of a document rather than a diff — run Council in a scratch
-   workspace with `CLAUDE.md` copied in. The safety net hashes the whole tree and fails closed on any
-   change, so a busy repo guarantees a false-trip; and the sync itself writes `AGENTS.md` into a repo
-   you may have been asked not to touch. Recipe in reviewer-selection.md §6.
+   workspace with the review brief copied in. The safety net hashes the whole tree and fails closed
+   on any change, so a busy repo guarantees a false-trip. Recipe in reviewer-selection.md §6.
 
-### 1. Sync Project Context
+### 1. Preserve Project Instructions
 
-Run the sync script to copy CLAUDE.md content into AGENTS.md (for Codex):
+**Never write, replace, back up, or remove the project's `AGENTS.md`.** It is
+the Codex project's core instruction file. Qwen and Gemini receive all review
+context inline; optional Codex reads the existing file directly.
 
-```bash
-bash <skill_dir>/scripts/council_sync.sh <working_directory>
-```
-
-This creates/overwrites AGENTS.md with an advisory preamble + full CLAUDE.md content. Run this once per session or when CLAUDE.md changes. Gemini does not need a context file — it reviews only the inlined request, so all task context travels in the prompt itself.
-
-**Important:** After the council session, restore the user's AGENTS.md:
-```bash
-bash <skill_dir>/scripts/council_sync.sh --restore <working_directory>
-```
-Never `rm` AGENTS.md directly — repos increasingly own a real AGENTS.md and
-the sync script backs it up / restores it.
+`council_sync.sh` remains only as a read-only compatibility shim. Its
+`--restore` mode may recover backup state left by an interrupted pre-1.6.2 run,
+but new Council runs do not call it.
 
 ### 2. Compose the Advisory Prompt
 
@@ -202,18 +194,13 @@ Launch each advisor DETACHED from a normal foreground Bash call, which
 returns immediately:
 
 ```bash
-nohup bash <skill_dir>/scripts/council_invoke.sh --codex-only <prompt_file> <working_directory> \
-  > /tmp/council_codex_launch.log 2>&1 & disown
+nohup bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory> \
+  > /tmp/council_launch.log 2>&1 & disown
 ```
 
-```bash
-nohup bash <skill_dir>/scripts/council_invoke.sh --gemini-only <prompt_file> <working_directory> \
-  > /tmp/council_gemini_launch.log 2>&1 & disown
-```
-
-**OpenRouter seats (1.6.0)** — the milestone-tier Qwen seat, the opt-in GLM seat, or
-any raw `vendor/model` id, over HTTPS with no CLI and no repo access. Launch them the
-same way; one process can carry several seats:
+**Additional seats** — Codex (`--with-codex`), GLM (`--openrouter glm`), or any
+raw `vendor/model` id may be added explicitly. The default invocation already
+includes Qwen; do not add it a second time.
 
 ```bash
 nohup bash <skill_dir>/scripts/council_invoke.sh --openrouter-only --openrouter qwen <prompt_file> <working_directory> \
@@ -238,7 +225,8 @@ e.g. with a Monitor until-loop on file existence, or periodic checks. A
 liveness rule: if the advisor process shows under ~2s of CPU time after
 120s, treat it as hung, kill it, and relaunch once.
 
-For **single-advisor modes** (Codex-only or Gemini-only), launch only the available advisor as a single detached process.
+For **single-advisor modes**, use `--openrouter-only --openrouter qwen`,
+`--gemini-only`, or `--codex-only` explicitly.
 
 #### 3b. Poll and Present Progressive Results
 
@@ -389,7 +377,7 @@ If you presented an early result during progressive polling (Step 3b), the user 
 
 #### Full Council Mode (both advisors responded)
 
-**Default mode — Synthesis:** Read both responses, identify areas of agreement and disagreement, then present:
+**Default mode — Synthesis:** Read Qwen and Gemini's responses, identify areas of agreement and disagreement, then present:
 
 ```
 ## Council Synthesis
@@ -398,15 +386,12 @@ If you presented an early result during progressive polling (Step 3b), the user 
 
 **Divergence:** [Points where they disagree, with each position]
 
-**Claude's Recommendation:** [Your assessment integrating all three perspectives — yours plus both advisors'. Note: Codex remains the primary source of truth and the main shipping gate; Gemini is advisory.]
+**Claude's Recommendation:** [Your assessment integrating all three perspectives — yours plus both advisors'. Note: Qwen is the default external review gate; mechanically verify every file-dependent claim locally.]
 ```
 
 **Side-by-side mode** (when user requests "show me both" or "side by side"):
 
 ```
-## Codex ({codex_model})
-[Full Codex response]
-
 ## Gemini ({backend}/{model})
 [Full Gemini response]
 
@@ -424,7 +409,9 @@ Present the single advisor's response with your own assessment.
 > [!IMPORTANT]
 > If Gemini (agy) dropped out mid-session or failed validation (returning an error log/response), you must explicitly surface this failure as a "degraded one-advisor Council (Codex only)" and never silently ignore it.
 >
-> If Gemini is the only advisor that responded (e.g. Gemini-only mode or Codex failed), remember that Gemini must never act as a sole shipping gate. Its opinions are strictly advisory, and Codex remains the primary codebase source of truth.
+> If Gemini is the only advisor that responded, treat it as advisory rather
+> than a sole shipping gate. Restore Qwen or use an explicitly requested Codex
+> seat before shipping.
 >
 > When Gemini failed, name the failure class from the script's reason string
 > (empty / refusal / non-engagement / timeout) — "degraded one-advisor
@@ -476,8 +463,10 @@ grep/build before being surfaced as actionable — Gemini has fabricated
 multi-file "compilation blockers" with fake code blocks (2026-04-23).
 Sweeping identical cross-file claims are a pattern-match red flag; real bugs
 concentrate in 1–2 files. Trust grep over the advisor's quoted snippet.
-Codex remains the primary source of truth and the mandatory shipping gate:
-wait for its response even when every other layer is green.
+Qwen is the default external review gate. Because it receives inline context
+rather than repository access, mechanically verify every file-dependent claim
+with a local grep, test, or build before treating it as actionable. Codex is an
+optional extra seat, not a mandatory gate.
 
 ### 5. Cleanup
 
@@ -489,15 +478,9 @@ wait for its response even when every other layer is green.
 
 **Why this matters:** Response files live inside `.council-tmp/`. If you delete that directory before reading the files, the responses are lost permanently.
 
-Once all conditions above are satisfied, clean up in this order (ORDER IS
-LOAD-BEARING — the AGENTS.md backup lives inside `.council-tmp/`, so restore
-MUST precede deletion):
-
-1. `bash <skill_dir>/scripts/council_sync.sh --restore <working_directory>`
-   (restores or removes AGENTS.md from its backup inside .council-tmp/)
-2. Remove the prompt file.
-3. `rm -rf <working_directory>/.council-tmp/` — LAST, after the restore and
-   after every response file has been read into context.
+Once all conditions above are satisfied, remove the prompt file, then remove
+`<working_directory>/.council-tmp/` only after every response file has been
+read. `AGENTS.md` is outside Council's lifecycle and must remain untouched.
 
 ## Permissions and Safety
 
@@ -532,11 +515,11 @@ Either (a) an advisor sandbox escape (rare — investigate as a real security is
 - **Gemini**: backend-dependent. gemini-cli: model via `COUNCIL_GEMINI_MODEL`
   → `-m`. agy: `COUNCIL_GEMINI_MODEL` → `--model` (run `agy models` for ids;
   a Pro tier gives deeper reviews than the default Flash).
-- **OpenRouter seats** (`--openrouter qwen,glm`): model resolved at launch as
+- **OpenRouter seats** (Qwen by default; `--openrouter qwen,glm` to override): model resolved at launch as
   the newest flagship of the family on OpenRouter's live listing (override via
   `COUNCIL_QWEN_MODEL` / `COUNCIL_GLM_MODEL`); effort follows
   `COUNCIL_CODEX_EFFORT` unless `COUNCIL_OPENROUTER_EFFORT` says otherwise;
-  `max_tokens` 32000 by default. Advisory only — Codex remains the gate.
+  `max_tokens` 32000 by default. Qwen is the default external review gate.
 - All advisors review INLINED content; only Codex additionally has
   read-only filesystem access to the working directory.
 
@@ -544,16 +527,16 @@ Either (a) an advisor sandbox escape (rare — investigate as a real security is
 
 Two different things share the OpenRouter account:
 
-1. **The Codex FALLBACK** — used only when the native Codex CLI fails (rate limit /
-   quota — read the error log, never guess). Still a config.toml provider switch,
-   see [references/reviewer-selection.md](references/reviewer-selection.md) §2.
-2. **Extra SEATS** — Qwen (milestone tier) and GLM (opt-in), scripted since 1.6.0
-   via `--openrouter qwen,glm`. No hand-built curl. §3 and §7 there.
+1. **The default Qwen seat** — used on every normal Council run through
+   OpenRouter. If the key is absent, the script loudly falls back to native
+   Codex so older installations remain usable.
+2. **Extra seats** — Codex (`--with-codex`) and GLM (`--openrouter qwen,glm`)
+   are opt-in. No hand-built curl.
 
 | Seat | Model id | Notes |
 |---|---|---|
 | Codex fallback | **`openai/gpt-5.6-sol`** | Never a lesser variant (id confirmed on OpenRouter's listing 2026-09-08). Sol-era evidence: 5.3-codex → REVISE vs 5.6-sol → RESTRUCTURE on an identical prompt, 2026-08-04. |
-| Qwen (milestone) | **newest `qwen/qwen<ver>-max` on the live listing** (2026-09-06: `qwen3.8-max-0902`) | Resolved by the script at launch; `max_tokens` 32000 default; starvation is detected and named. ~$0.08 per 26 KB diff review at medium. |
+| Qwen (default) | **newest `qwen/qwen<ver>-max` on the live listing** (2026-09-06: `qwen3.8-max-0902`) | Resolved by the script at launch; `max_tokens` 32000 default; starvation is detected and named. ~$0.08 per 26 KB diff review at medium. |
 | GLM (opt-in) | **newest `z-ai/glm-<ver>` on the live listing** (2026-09-06: `glm-5.3`) | Unmeasured lens; ~$0.02 per 26 KB diff review at medium. Not part of any tier by default. |
 
 Operational notes that cost a session to learn:
@@ -600,7 +583,10 @@ Key rules:
 
 After presenting the council synthesis, reflect on what the advisors revealed — gaps, blind spots, better approaches, or project-specific conventions that Claude missed.
 
-Generalize these learnings into `CLAUDE.md` and `AGENTS.md` so future agents start with those lessons already loaded. Write down any information that would be useful for a future agent working in this repository, including:
+Propose durable learnings after synthesis, but do not automatically edit the
+project's `AGENTS.md`. When the active task authorizes documentation changes,
+write to the project's canonical instruction source and regenerate derived
+files through the project's own workflow. Include information such as:
 
 - What the advisors caught that Claude missed
 - Why it was missed (root cause, not just symptom)

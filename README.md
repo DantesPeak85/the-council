@@ -4,22 +4,22 @@
 
 > **Security advisory (2026-05-25):** Versions **1.2.0 and 1.2.1 do NOT enforce read-only on the Gemini advisor** as their docs claim — `agy`'s `--dangerously-skip-permissions` auto-approves tool calls rather than withholding them, and a 2026-05-24 incident saw agy ghost-write 8 files into a project directory. **Upgrade to 1.3.0 or later** for real OS-level sandbox enforcement (`sandbox-exec` on macOS) and a pre/post-invocation diff safety net. See [SKILL.md → Permissions and Safety](skills/the-council/SKILL.md) for the full incident note.
 
-A Claude Code skill that convenes OpenAI Codex and Google Gemini as an advisory board. Both run in parallel via their CLIs — Codex with read-only codebase access, Gemini reviewing the fully-inlined request — and return independent analyses that Claude synthesizes into a unified recommendation.
+A Claude Code skill that convenes Qwen and Google Gemini as its default advisory board. Qwen runs through OpenRouter and Gemini through its selected CLI backend; Codex remains available as an explicit seat or compatibility fallback.
 
 ## What It Does
 
 When you say "ask the council" or request a second opinion, Claude:
 
-1. Syncs your project context (CLAUDE.md) to Codex via AGENTS.md
+1. Builds a fully inlined review request for Qwen and Gemini
 2. Composes a prompt using the appropriate template (code review, architecture, debugging, or general)
-3. Invokes Codex and Gemini in parallel, both in **read-only sandboxes**
+3. Invokes Qwen and Gemini in parallel without repository write access
 4. Synthesizes the responses — highlighting consensus, divergence, and Claude's own recommendation
 
-Codex runs with `xhigh` reasoning effort by default — the invoke script sets `COUNCIL_CODEX_EFFORT=xhigh` explicitly rather than trusting `~/.codex/config.toml` (which often ships a weaker `medium`). Codex has read-only filesystem access to the working directory; Gemini reviews the inlined prompt content in a single shot.
+Qwen runs at medium effort with a 32,000-token completion budget by default. It and Gemini review the inlined prompt content in a single shot. Add Codex only with `--with-codex` or `--codex-only`; without an OpenRouter key, the script loudly falls back to Codex for compatibility.
 
 ### Learning Loop
 
-After each council session, Claude reflects on what the advisors revealed — gaps, blind spots, or better approaches — and generalizes those learnings into `CLAUDE.md` and `AGENTS.md`. This means future sessions in the same repository start with lessons from previous council deliberations already loaded.
+After each Council session, the main agent can propose durable lessons. It never automatically edits the project's `AGENTS.md`; authorized documentation changes go through that project's canonical instruction source and regeneration workflow.
 
 ## Installation
 
@@ -78,7 +78,7 @@ model = "gpt-5.6-sol"
 ```
 Reasoning effort is set by the invoke script (`COUNCIL_CODEX_EFFORT=xhigh` by default), so you do **not** need `model_reasoning_effort` in config. Set `COUNCIL_CODEX_EFFORT=config` if you'd rather the script defer to `config.toml`.
 
-**OpenRouter seats (1.6.0)** — optional extra advisors over HTTPS: `export OPENROUTER_API_KEY=…` (in `~/.zshenv`, never in a prompt), then `--openrouter qwen` (milestone-tier Qwen) or `--openrouter qwen,glm`, or any raw `vendor/model` id. Named seats resolve at launch to the newest flagship on OpenRouter's live listing; the banner prints the id and where it came from.
+**OpenRouter seats (1.6.0)** — export `OPENROUTER_API_KEY=…` (in `~/.zshenv`, never in a prompt) for the default Qwen reviewer. Use `--openrouter qwen,glm` to add GLM, or any raw `vendor/model` id. Named seats resolve at launch to the newest flagship on OpenRouter's live listing; the banner prints the id and where it came from.
 
 **Gemini** — no config file needed. To pin a model for either backend, export `COUNCIL_GEMINI_MODEL` (run `agy models` for agy ids; an AI Studio model id for gemini-cli). Left unset, each backend uses its own default.
 

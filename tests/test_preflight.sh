@@ -13,6 +13,7 @@
 #   P3: new keys survive into the CACHED replay
 #   P4: cached replay preserves exit semantics (no advisor → nonzero on BOTH runs)
 #   P5: cache invalidates when ~/.codex/config.toml is newer than the cache
+#   P6: OpenRouter/Qwen alone satisfies preflight
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -96,6 +97,17 @@ run_pf "$WD" "$TMP/p2b.out"
 assert_kv "$TMP/p2b.out" GEMINI_AUTHENTICATED true P2b
 pass "P2b: oauth_creds.json authenticates (control)"
 
+# --- P6: Qwen/OpenRouter alone is a valid Council ----------------------------
+FAKEHOME="$TMP/p6/home"; mkdir -p "$FAKEHOME"
+FAKE_BIN="$TMP/p6/bin"; mkdir -p "$FAKE_BIN"
+WD="$TMP/p6/wd"; mkdir -p "$WD"
+run_pf "$WD" "$TMP/p6.out" OPENROUTER_API_KEY=test-or-key
+[[ $PF_RC -eq 0 ]] || fail "P6: OpenRouter-only preflight should pass, got $PF_RC"
+assert_kv "$TMP/p6.out" OPENROUTER_AVAILABLE true P6
+assert_kv "$TMP/p6.out" CODEX_AUTHENTICATED false P6
+assert_kv "$TMP/p6.out" GEMINI_AUTHENTICATED false P6
+pass "P6: Qwen/OpenRouter alone satisfies preflight"
+
 # --- P3: new keys present in CACHED replay -----------------------------------
 FAKEHOME="$TMP/p3/home"; mkdir -p "$FAKEHOME"
 FAKE_BIN="$TMP/p3/bin";  mkdir -p "$FAKE_BIN"
@@ -131,7 +143,7 @@ echo 'model = "gpt-5.5"' > "$FAKEHOME/.codex/config.toml"
 FAKE_BIN="$TMP/p5/bin"; mkdir -p "$FAKE_BIN"
 mkstub "$FAKE_BIN/gemini" "gemini-cli 0.42.0 (fake)"
 WD="$TMP/p5/wd"; mkdir -p "$WD"
-CACHE="$WD/.council-tmp/preflight_cache_v3"
+CACHE="$WD/.council-tmp/preflight_cache_v4"
 run_pf "$WD" "$TMP/p5.first.out" GEMINI_API_KEY=test-key
 [[ $PF_RC -eq 0 ]] || fail "P5: first run exit $PF_RC"
 assert_kv "$TMP/p5.first.out" GEMINI_CLI_AVAILABLE true P5
