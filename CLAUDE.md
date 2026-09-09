@@ -16,11 +16,11 @@ skills/the-council/
 ├── references/prompt-templates.md  # 4 prompt templates (review, architecture, debug, general)
 └── scripts/
     ├── council_preflight.sh        # Detects available CLIs + auth status (cached 2h)
-    ├── council_sync.sh             # Copies CLAUDE.md → AGENTS.md (Codex only)
+    ├── council_sync.sh             # Read-only shim; legacy interrupted-run recovery only
     └── council_invoke.sh           # Parallel CLI invocation: timeouts, OS sandbox, snapshot safety net, response validation
 ```
 
-**Execution flow:** Preflight → Sync context → Compose prompt from template → Invoke advisors in parallel → Synthesize responses (consensus/divergence/recommendation) → Generalize learnings into CLAUDE.md/AGENTS.md.
+**Execution flow:** Preflight → Compose an inlined prompt → Invoke advisors in parallel → Synthesize responses → Generalize learnings. The project's `AGENTS.md` is never replaced.
 
 **Operating modes** are determined by preflight: Qwen + Gemini by default, Qwen-only, Gemini-only, explicit Codex modes, or a loudly announced Codex compatibility fallback when OpenRouter is unavailable.
 
@@ -55,4 +55,4 @@ All scripts use `set -euo pipefail`. Variables are quoted. Exit codes are meanin
 
 ## Temp Files
 
-Invocation creates `.council-tmp/council_<mode>_YYYYMMDD_HHMMSS/` in the working directory, containing the composed prompt, advisor responses, errors, warnings, and safety-net snapshots. The preflight cache lives at `.council-tmp/preflight_cache_v4`. Context sync backs up any pre-existing `AGENTS.md` inside `.council-tmp/`, so restore it before cleanup.
+Invocation creates `.council-tmp/council_<mode>_YYYYMMDD_HHMMSS/` in the working directory, containing the composed prompt, advisor responses, errors, warnings, and safety-net snapshots. The preflight cache lives at `.council-tmp/preflight_cache_v4`. Council never replaces the project's `AGENTS.md`.

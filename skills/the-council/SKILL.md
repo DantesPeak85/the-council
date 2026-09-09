@@ -26,10 +26,9 @@ Tell the user:
 The Council needs to run bash scripts to invoke external advisors. I'll request permission for all of them now so the flow isn't interrupted.
 ```
 
-Then run all three scripts in sequence to trigger permission grants:
+Then run the two active scripts in sequence to trigger permission grants:
 1. `bash <skill_dir>/scripts/council_preflight.sh <working_directory>` — CLI availability check
-2. `bash <skill_dir>/scripts/council_sync.sh <working_directory>` — context sync
-3. `bash <skill_dir>/scripts/council_invoke.sh` (with `--help` or a no-op) — advisor invocation
+2. `bash <skill_dir>/scripts/council_invoke.sh` (with `--help` or a no-op) — advisor invocation
 
 Once permissions are granted, proceed with the workflow. The user will not be prompted again for these scripts during the session.
 
@@ -118,26 +117,18 @@ Four decisions this step makes, all load-bearing:
    completion token on reasoning and returned empty content — `finish_reason: MAX_TOKENS`.
 4. **Isolated workspace when the repo is busy.** If another session or process is writing to the
    target repo — or the review is of a document rather than a diff — run Council in a scratch
-   workspace with `CLAUDE.md` copied in. The safety net hashes the whole tree and fails closed on any
-   change, so a busy repo guarantees a false-trip; and the sync itself writes `AGENTS.md` into a repo
-   you may have been asked not to touch. Recipe in reviewer-selection.md §6.
+   workspace with the review brief copied in. The safety net hashes the whole tree and fails closed
+   on any change, so a busy repo guarantees a false-trip. Recipe in reviewer-selection.md §6.
 
-### 1. Sync Project Context
+### 1. Preserve Project Instructions
 
-Run the sync script to copy CLAUDE.md content into AGENTS.md (for Codex):
+**Never write, replace, back up, or remove the project's `AGENTS.md`.** It is
+the Codex project's core instruction file. Qwen and Gemini receive all review
+context inline; optional Codex reads the existing file directly.
 
-```bash
-bash <skill_dir>/scripts/council_sync.sh <working_directory>
-```
-
-This creates/overwrites AGENTS.md with an advisory preamble + full CLAUDE.md content. Run this once per session or when CLAUDE.md changes. Gemini does not need a context file — it reviews only the inlined request, so all task context travels in the prompt itself.
-
-**Important:** After the council session, restore the user's AGENTS.md:
-```bash
-bash <skill_dir>/scripts/council_sync.sh --restore <working_directory>
-```
-Never `rm` AGENTS.md directly — repos increasingly own a real AGENTS.md and
-the sync script backs it up / restores it.
+`council_sync.sh` remains only as a read-only compatibility shim. Its
+`--restore` mode may recover backup state left by an interrupted pre-1.6.2 run,
+but new Council runs do not call it.
 
 ### 2. Compose the Advisory Prompt
 
@@ -487,15 +478,9 @@ optional extra seat, not a mandatory gate.
 
 **Why this matters:** Response files live inside `.council-tmp/`. If you delete that directory before reading the files, the responses are lost permanently.
 
-Once all conditions above are satisfied, clean up in this order (ORDER IS
-LOAD-BEARING — the AGENTS.md backup lives inside `.council-tmp/`, so restore
-MUST precede deletion):
-
-1. `bash <skill_dir>/scripts/council_sync.sh --restore <working_directory>`
-   (restores or removes AGENTS.md from its backup inside .council-tmp/)
-2. Remove the prompt file.
-3. `rm -rf <working_directory>/.council-tmp/` — LAST, after the restore and
-   after every response file has been read into context.
+Once all conditions above are satisfied, remove the prompt file, then remove
+`<working_directory>/.council-tmp/` only after every response file has been
+read. `AGENTS.md` is outside Council's lifecycle and must remain untouched.
 
 ## Permissions and Safety
 
@@ -598,7 +583,10 @@ Key rules:
 
 After presenting the council synthesis, reflect on what the advisors revealed — gaps, blind spots, better approaches, or project-specific conventions that Claude missed.
 
-Generalize these learnings into `CLAUDE.md` and `AGENTS.md` so future agents start with those lessons already loaded. Write down any information that would be useful for a future agent working in this repository, including:
+Propose durable learnings after synthesis, but do not automatically edit the
+project's `AGENTS.md`. When the active task authorizes documentation changes,
+write to the project's canonical instruction source and regenerate derived
+files through the project's own workflow. Include information such as:
 
 - What the advisors caught that Claude missed
 - Why it was missed (root cause, not just symptom)

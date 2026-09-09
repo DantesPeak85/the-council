@@ -19,7 +19,7 @@ Qwen runs at medium effort with a 32,000-token completion budget by default. It 
 
 ### Learning Loop
 
-After each council session, Claude reflects on what the advisors revealed — gaps, blind spots, or better approaches — and generalizes those learnings into `CLAUDE.md` and `AGENTS.md`. This means future sessions in the same repository start with lessons from previous council deliberations already loaded.
+After each Council session, the main agent can propose durable lessons. It never automatically edits the project's `AGENTS.md`; authorized documentation changes go through that project's canonical instruction source and regeneration workflow.
 
 ## Installation
 

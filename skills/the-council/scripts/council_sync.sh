@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# council_sync.sh — Sync CLAUDE.md into AGENTS.md for Codex, preserving any
-# user-owned AGENTS.md.
+# council_sync.sh — Preserve AGENTS.md; recover only pre-1.6.2 sync state.
 #
-# Usage: council_sync.sh <working_directory>            # write council AGENTS.md
-#        council_sync.sh --restore <working_directory>  # undo: restore original or remove
+# Usage: council_sync.sh <working_directory>            # read-only compatibility no-op
+#        council_sync.sh --restore <working_directory>  # recover legacy interrupted state
 #
-# AGENTS.md is Codex/OpenAI's native project-instructions file and may be a
-# real, user-owned file. Before writing, any existing AGENTS.md is backed up
-# to .council-tmp/AGENTS.md.orig; --restore puts it back (or removes the
-# council-written file when no original existed).
+# Since v1.6.2, advisors receive the review brief inline and optional Codex
+# reads the project's own AGENTS.md directly. New runs never write, replace,
+# back up, or remove AGENTS.md. The legacy restore path remains below solely to
+# recover state left by an interrupted older Council run.
 set -euo pipefail
 
 RESTORE=false
@@ -23,6 +22,11 @@ AGENTS_MD="$WORK_DIR/AGENTS.md"
 BACKUP_DIR="$WORK_DIR/.council-tmp"
 BACKUP="$BACKUP_DIR/AGENTS.md.orig"
 SENTINEL="$BACKUP_DIR/AGENTS.md.council-written"
+
+if [[ "$RESTORE" != "true" ]]; then
+  echo "AGENTS.md preserved unchanged; Council passes context inline to advisors."
+  exit 0
+fi
 
 # Sentinel-staleness guard (final review): a SENTINEL is only trustworthy if the
 # AGENTS.md it points at is actually council-generated. If a session died before
