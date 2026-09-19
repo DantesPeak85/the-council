@@ -27,6 +27,9 @@ git -C "$PROJECT" -c user.email=t@t -c user.name=t commit -qm i
 PROMPT="$TMPDIR_TEST/prompt.txt"
 # 300KB prompt — would exceed ARG_MAX if passed as argv
 python3 -c "print('Review this. ' * 25000)" > "$PROMPT"
+# This file tests argv/stdin plumbing, not budgets: the 300KB prompt (~81k tokens + the
+# fixed Codex overhead) would trip the usage-plan ceiling, so raise it here on purpose.
+export COUNCIL_MAX_INPUT_TOKENS=1000000
 
 export FAKE_CODEX_LOG="$TMPDIR_TEST/codex.log"
 
