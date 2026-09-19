@@ -17,9 +17,10 @@
 #        variants and alias rows ignored). Listing unreachable → last-known id + loud WARNING.
 #        Listing reachable but family rule matches nothing → last-known id + WARNING.
 #   O12. An explicit COUNCIL_*_MODEL skips the listing call entirely.
+#   O19. The no-flag default panel is Codex + Gemini and sends NO OpenRouter request even with a
+#        key present (Tom 2026-09-19: Qwen/GLM only when asked). `--openrouter qwen` adds the seat.
 #   O20. Provider routing: named seats get `:floor` by default (cheapest host); `none` sends the
 #        bare id, `nitro` is accepted, garbage fails at startup; explicit/raw ids are never suffixed.
-#   O19. The no-flag default invokes Qwen + Gemini and does not invoke Codex.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -32,7 +33,6 @@ fail() { echo "FAIL: $1"; exit 1; }
 FAKE_BIN="$TMPDIR_TEST/bin"; mkdir -p "$FAKE_BIN"
 cp "$REPO_ROOT/tests/fixtures/fake-curl.sh" "$FAKE_BIN/curl"; chmod +x "$FAKE_BIN/curl"
 cp "$REPO_ROOT/tests/fixtures/fake-codex.sh" "$FAKE_BIN/codex"; chmod +x "$FAKE_BIN/codex"
-cp "$REPO_ROOT/tests/fixtures/fake-gemini.sh" "$FAKE_BIN/gemini"; chmod +x "$FAKE_BIN/gemini"
 PROJECT="$TMPDIR_TEST/proj"; mkdir -p "$PROJECT"
 git -C "$PROJECT" init -q; echo x > "$PROJECT/f.txt"; git -C "$PROJECT" add -A
 git -C "$PROJECT" -c user.email=t@t -c user.name=t commit -qm i
@@ -296,19 +296,29 @@ check_fail error-after-text   'HTTP 200: upstream provider reset'
 grep -q 'cost_usd=0.003' "$(seat_file qwen_usage.log)" || fail "O18/error-after-text: usage seen before the error was not kept"
 pass "O18: [DONE]-only, length→stop, content-after-stop, mixed index, error-after-text all fail with text preserved"
 
-# O19: Qwen replaces Codex in the default panel. Gemini remains the second
-# independent advisor; Codex is available only through an explicit flag or the
-# loudly announced no-OpenRouter compatibility fallback.
+# O19: the default panel is Codex + Gemini. An OpenRouter key in the environment
+# must NOT add a seat on its own — Qwen/GLM run only when explicitly requested
+# (Tom 2026-09-19; reverts the-council #6 which made Qwen the default reviewer).
+cp "$REPO_ROOT/tests/fixtures/fake-gemini.sh" "$FAKE_BIN/gemini"; chmod +x "$FAKE_BIN/gemini"
 : > "$TMPDIR_TEST/codex.log"; : > "$TMPDIR_TEST/gemini.log"
-run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" GEMINI_API_KEY=fake \
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" GEMINI_API_KEY=fake COUNCIL_GEMINI_BACKEND=gemini \
   FAKE_CODEX_LOG="$TMPDIR_TEST/codex.log" FAKE_GEMINI_LOG="$TMPDIR_TEST/gemini.log" \
   bash "$COUNCIL_SCRIPT" --allow-unsandboxed-gemini "$PROMPT" "$PROJECT"
 [[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/stderr.log"; fail "O19: default panel exit $RC"; }
-[[ ! -s "$TMPDIR_TEST/codex.log" ]] || fail "O19: default panel invoked Codex"
+[[ -s "$TMPDIR_TEST/codex.log" ]] || fail "O19: default panel did not invoke Codex"
 [[ -s "$TMPDIR_TEST/gemini.log" ]] || fail "O19: default panel did not invoke Gemini"
-[[ -s "$(seat_file qwen_response.md)" ]] || fail "O19: default panel did not invoke Qwen"
-grep -q 'Invoking The Council (Gemini-only + OpenRouter (qwen))' "$TMPDIR_TEST/stdout.log" || fail "O19: default panel banner is wrong"
-pass "O19: default panel is Qwen + Gemini, with no Codex usage"
+[[ ! -s "$FAKE_CURL_LOG" ]] || fail "O19: default panel sent an OpenRouter request although no seat was asked for ($(grep '^MODEL' "$FAKE_CURL_LOG" | tr '\n' ' '))"
+[[ -z "$(seat_file qwen_response.md)" ]] || fail "O19: a Qwen response file exists on the default panel"
+grep -q 'Invoking The Council (Full Council)\.\.\.' "$TMPDIR_TEST/stdout.log" || fail "O19: banner is not 'Full Council' (got: $(grep 'Invoking The Council' "$TMPDIR_TEST/stdout.log"))"
+grep -q 'OpenRouter seat:' "$TMPDIR_TEST/stdout.log" && fail "O19: banner lists an OpenRouter seat nobody asked for"
+: > "$TMPDIR_TEST/codex.log"; : > "$TMPDIR_TEST/gemini.log"
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" GEMINI_API_KEY=fake COUNCIL_GEMINI_BACKEND=gemini \
+  FAKE_CODEX_LOG="$TMPDIR_TEST/codex.log" FAKE_GEMINI_LOG="$TMPDIR_TEST/gemini.log" \
+  bash "$COUNCIL_SCRIPT" --allow-unsandboxed-gemini --openrouter qwen "$PROMPT" "$PROJECT"
+[[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/stderr.log"; fail "O19b: explicit qwen exit $RC"; }
+[[ -s "$TMPDIR_TEST/codex.log" && -s "$TMPDIR_TEST/gemini.log" ]] || fail "O19b: adding qwen dropped a CLI seat"
+grep -q '^MODEL:qwen/qwen3.10-max:floor$' "$FAKE_CURL_LOG" || fail "O19b: explicit --openrouter qwen did not add the seat"
+pass "O19: default panel = Codex + Gemini, no OpenRouter seat unless asked; --openrouter qwen adds it"
 
 echo ""
 # O20: provider routing suffix — default :floor on script-chosen ids only

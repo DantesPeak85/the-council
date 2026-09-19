@@ -1,6 +1,6 @@
 {
   "name": "the-council",
-  "description": "Multi-model advisory board \u2014 Qwen and Gemini by default, with optional Codex",
+  "description": "Multi-model advisory board \u2014 get second opinions from Codex and Gemini",
   "version": "1.6.3",
   "author": {
     "name": "Tom Wolinitz"
@@ -12,7 +12,6 @@
     "multi-model",
     "code-review",
     "advisory",
-    "qwen",
     "codex",
     "gemini"
   ]
