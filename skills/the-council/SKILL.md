@@ -213,6 +213,18 @@ nohup bash <skill_dir>/scripts/council_invoke.sh --gemini-only <prompt_file> <wo
   > /tmp/council_gemini_launch.log 2>&1 & disown
 ```
 
+**Usage plan (1.6.3, Tom 2026-09-19)** — the banner now prints, per seat and BEFORE anything
+launches, what the run is about to spend: input = the fixed native-Codex overhead (~24.5k
+tokens: Codex's own instructions + tools + the configured MCP servers — measured, and
+`-c mcp_servers={}` does not shrink it) + the prompt; requested output = the band the effort
+level implies (Codex has no hard output cap — effort IS the lever; OpenRouter seats also carry
+`max_tokens`); cost at OpenRouter list price per seat and a total. **A seat whose estimated
+input exceeds `COUNCIL_MAX_INPUT_TOKENS` (default 100,000) is REFUSED before launch** — trim
+the prompt, or `COUNCIL_ALLOW_OVERSIZE=1` to launch loudly. After the run the report line of
+every seat carries its ACTUAL tokens and cost: Codex's from its `--json` event stream
+(`codex_usage.log`), the OpenRouter seats' from `<seat>_usage.log`. Quote these numbers to
+Tom with the verdicts — the Codex seat is his ChatGPT quota, the rest is his OpenRouter money.
+
 **OpenRouter seats (1.6.0)** — the Qwen seat and the GLM seat, BOTH only when Tom asks, or
 any raw `vendor/model` id, over HTTPS with no CLI and no repo access. Launch them the
 same way; one process can carry several seats:

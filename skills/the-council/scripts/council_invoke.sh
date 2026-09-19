@@ -26,6 +26,10 @@
 #                      none = OpenRouter's default balance). Explicit COUNCIL_*_MODEL ids and raw
 #                      vendor/model ids are sent verbatim — a pin stays a pin.
 #   OPENROUTER_MODELS_URL / OPENROUTER_URL — endpoint overrides (tests)
+#   COUNCIL_MAX_INPUT_TOKENS — per-seat estimated-input ceiling (default 100000); over it the run is
+#                      REFUSED before any advisor launches. COUNCIL_ALLOW_OVERSIZE=1 launches anyway, loudly.
+#   COUNCIL_CODEX_OVERHEAD_TOKENS — fixed input every native Codex call carries (default 24500, measured)
+#   COUNCIL_USAGE_PLAN — on (default) | off: the pre-launch usage plan + post-run actuals
 #   COUNCIL_TIMEOUT  — Max seconds to wait per advisor (default: 600)
 #   AGY_PRINT_TIMEOUT — Override agy --print-timeout (default: 8m)
 #                      agy's own 5m default can race with COUNCIL_TIMEOUT; 8m
@@ -598,6 +602,60 @@ apply_openrouter_routing() {  # $1 = model id → id with the routing suffix (id
   esac
 }
 
+# --- Usage plan (Tom 2026-09-19): estimate before launch, refuse oversize, record actuals ---
+# Every native Codex call carries a FIXED input overhead before the prompt —
+# Codex's own instructions, tool schemas and the configured MCP servers.
+# Measured 2026-09-19 on a five-word prompt: 24,435–24,553 input tokens, and
+# `-c mcp_servers={}` does NOT reduce it. At Astra list price ($10/M in) that is
+# ~$0.24 per call before any review content, so the plan must include it.
+COUNCIL_CODEX_OVERHEAD_TOKENS="${COUNCIL_CODEX_OVERHEAD_TOKENS:-24500}"
+COUNCIL_MAX_INPUT_TOKENS="${COUNCIL_MAX_INPUT_TOKENS:-100000}"   # per seat, estimated; ~$1 of input alone at Astra list, 4× the largest review to date
+COUNCIL_ALLOW_OVERSIZE="${COUNCIL_ALLOW_OVERSIZE:-0}"            # 1 = launch anyway, loudly
+COUNCIL_USAGE_PLAN="${COUNCIL_USAGE_PLAN:-on}"                   # off = skip the block entirely (tests / emergencies)
+TOKEN_BYTES=4                                                    # planning ratio: 1 token ≈ 4 bytes of English/markdown/code
+est_tokens_from_bytes() { echo $(( ($1 + TOKEN_BYTES - 1) / TOKEN_BYTES )); }
+# Expected OUTPUT tokens (content + reasoning) by effort — planning bands from
+# measured runs (medium ≈ 3.5–5k content + 1–1.5k reasoning; high ≈ 4.6k + 1k on
+# a 22 KB spec review; xhigh observed 15k+). Native Codex has NO hard output cap
+# (the binary knows no model_max_output_tokens key — checked 2026-09-19), so
+# effort IS the output lever; OpenRouter seats additionally carry max_tokens.
+expected_output_tokens() {
+  case "$1" in
+    none|minimal) echo 1500 ;; low) echo 2500 ;; medium) echo 6000 ;;
+    high|config)  echo 12000 ;; xhigh) echo 25000 ;; *) echo 6000 ;;
+  esac
+}
+# List price, USD per 1M tokens → "<in> <out> <source>". Source = the live
+# OpenRouter listing when this run already fetched it, else the last-known
+# table (2026-09-19). Native Codex ids are priced at their OpenRouter twin
+# (openai/<id>) — the ChatGPT plan bills in quota, not dollars, but the list
+# price is the honest weight of what a seat consumes.
+price_per_million() {
+  python3 - "${1:-}" "$2" <<'PYEOF_PRICE'
+import json, sys
+listing, slug = sys.argv[1], sys.argv[2]
+known = {"openai/gpt-6-astra": (10.0, 50.0), "openai/gpt-5.6-sol": (2.0, 10.0),
+         "qwen/qwen3.8-max-0902": (2.0, 6.0), "z-ai/glm-5.3": (0.91, 2.86)}
+base = slug.split(":")[0]
+if listing:
+    try:
+        for m in json.load(open(listing))["data"]:
+            if m.get("id") == base:
+                p = m["pricing"]; print(f"{float(p['prompt'])*1e6:.4f} {float(p['completion'])*1e6:.4f} listing"); sys.exit(0)
+    except Exception:
+        pass
+if base in known:
+    print(f"{known[base][0]:.4f} {known[base][1]:.4f} last-known"); sys.exit(0)
+print("? ? unknown")
+PYEOF_PRICE
+}
+usd() {  # $1 tokens, $2 price/M → "$0.31" or "?"
+  [[ "$2" == "?" ]] && { echo "?"; return; }
+  python3 -c 'import sys; print(f"${int(sys.argv[1])*float(sys.argv[2])/1e6:.2f}")' "$1" "$2"
+}
+ktok() { python3 -c 'import sys; print(f"{int(sys.argv[1])/1000:.1f}k")' "$1"; }
+usd_add() { python3 -c 'import sys; a=[x for x in sys.argv[1:] if x!="?"]; print(f"${sum(float(x.lstrip(chr(36))) for x in a):.2f}" if a else "?")' "$@"; }
+
 # Fetch the listing (public endpoint, no key) and prove it parses. $1 = out file.
 # $2 = stderr capture (curl + parse diagnostics) so an outage is explainable.
 fetch_openrouter_listing() {
@@ -1028,7 +1086,6 @@ if [[ -n "$COUNCIL_OPENROUTER_SEATS" ]]; then
     done
     SEAT_NAMES+=("$_s"); SEAT_MODELS+=("$_m"); SEAT_SOURCES+=("$_src")
   done
-  [[ -n "$OPENROUTER_LISTING_FILE" ]] && rm -f "$OPENROUTER_LISTING_FILE"
 fi
 RUN_OPENROUTER=false
 [[ "${#SEAT_NAMES[@]}" -gt 0 ]] && RUN_OPENROUTER=true
@@ -1123,8 +1180,12 @@ mkdir -p "$TMPDIR_COUNCIL"
 # before this point, so the file captures the complete final prompt.
 PROMPT_FILE_FINAL="$TMPDIR_COUNCIL/prompt_final.txt"
 printf '%s' "$PROMPT" > "$PROMPT_FILE_FINAL"
+PROMPT_BYTES=$(wc -c < "$PROMPT_FILE_FINAL" | tr -d ' ')
+PROMPT_TOKENS_EST=$(est_tokens_from_bytes "$PROMPT_BYTES")
 
 CODEX_OUT="$TMPDIR_COUNCIL/codex_response.md"
+CODEX_EVENTS="$TMPDIR_COUNCIL/codex_events.jsonl"   # `codex exec --json` stream: turn.completed carries the actual token usage
+CODEX_USAGE="$TMPDIR_COUNCIL/codex_usage.log"
 GEMINI_OUT="$TMPDIR_COUNCIL/gemini_response.md"
 CODEX_ERR="$TMPDIR_COUNCIL/codex_error.log"
 GEMINI_ERR="$TMPDIR_COUNCIL/gemini_error.log"
@@ -1208,6 +1269,47 @@ if [[ "$RUN_GEMINI" == "true" && "$COUNCIL_GEMINI_BACKEND_RESOLVED" == "agy" ]];
     echo "  agy isolation: UNSANDBOXED (--allow-unsandboxed-gemini); diff check is the only protection"
   fi
 fi
+
+# --- Usage plan: what this run is about to spend, per seat, BEFORE anything launches ---
+# Estimates only (1 token ≈ 4 bytes; prices = OpenRouter list). Written so a
+# reader can see input vs requested output separately — the input side is
+# mostly fixed overhead + the prompt, the output side is set by effort.
+USAGE_PLAN_MAX_INPUT=0
+USAGE_PLAN_TOTAL="?"
+if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
+  echo "  Usage plan (estimates: 1 token ≈ ${TOKEN_BYTES} bytes; prices = OpenRouter list, USD; prompt ${PROMPT_BYTES} B ≈ $(ktok "$PROMPT_TOKENS_EST") tokens):"
+  _costs=()
+  if [[ "$RUN_CODEX" == "true" ]]; then
+    _in=$(( COUNCIL_CODEX_OVERHEAD_TOKENS + PROMPT_TOKENS_EST )); _out=$(expected_output_tokens "$COUNCIL_CODEX_EFFORT")
+    read -r _pin _pout _psrc <<< "$(price_per_million "$OPENROUTER_LISTING_FILE" "openai/${CODEX_MODEL_DISPLAY}")"
+    _cin=$(usd "$_in" "$_pin"); _cout=$(usd "$_out" "$_pout"); _c=$(usd_add "$_cin" "$_cout"); _costs+=("$_c")
+    (( _in > USAGE_PLAN_MAX_INPUT )) && USAGE_PLAN_MAX_INPUT=$_in
+    echo "    Codex   ${CODEX_MODEL_DISPLAY}: in ≈ $(ktok "$COUNCIL_CODEX_OVERHEAD_TOKENS") fixed + $(ktok "$PROMPT_TOKENS_EST") prompt = $(ktok "$_in")   out ≈ $(ktok "$_out") (effort ${COUNCIL_CODEX_EFFORT}; no hard cap on native Codex)   ≈ ${_cin} + ${_cout} = ${_c} (${_psrc} price)"
+  fi
+  if [[ "$RUN_GEMINI" == "true" ]]; then
+    (( PROMPT_TOKENS_EST > USAGE_PLAN_MAX_INPUT )) && USAGE_PLAN_MAX_INPUT=$PROMPT_TOKENS_EST
+    echo "    Gemini  ${GEMINI_MODEL_DISPLAY}: in ≈ $(ktok "$PROMPT_TOKENS_EST") prompt   out: CLI-governed   cost: not metered here (${COUNCIL_GEMINI_BACKEND_RESOLVED} plan)"
+  fi
+  for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+    _in=$(( PROMPT_TOKENS_EST + 150 )); _out=$(expected_output_tokens "$COUNCIL_OPENROUTER_EFFORT")
+    read -r _pin _pout _psrc <<< "$(price_per_million "$OPENROUTER_LISTING_FILE" "${SEAT_MODELS[$i]}")"
+    _cin=$(usd "$_in" "$_pin"); _cout=$(usd "$_out" "$_pout"); _c=$(usd_add "$_cin" "$_cout"); _costs+=("$_c")
+    (( _in > USAGE_PLAN_MAX_INPUT )) && USAGE_PLAN_MAX_INPUT=$_in
+    echo "    $(seat_label "${SEAT_NAMES[$i]}")  ${SEAT_MODELS[$i]}: in ≈ $(ktok "$_in")   out ≤ $(ktok "$COUNCIL_OPENROUTER_MAX_TOKENS") cap, ≈ $(ktok "$_out") expected (effort ${COUNCIL_OPENROUTER_EFFORT})   ≈ ${_cin} + ${_cout} = ${_c} (${_psrc} price)"
+  done
+  USAGE_PLAN_TOTAL="$(usd_add ${_costs[@]+"${_costs[@]}"})"
+  echo "    Total ≈ ${USAGE_PLAN_TOTAL} at list (Gemini excluded)   ceiling: ${COUNCIL_MAX_INPUT_TOKENS} estimated input tokens per seat (COUNCIL_MAX_INPUT_TOKENS)"
+  if (( USAGE_PLAN_MAX_INPUT > COUNCIL_MAX_INPUT_TOKENS )); then
+    if [[ "$COUNCIL_ALLOW_OVERSIZE" == "1" ]]; then
+      echo "  WARNING: estimated input ${USAGE_PLAN_MAX_INPUT} tokens exceeds COUNCIL_MAX_INPUT_TOKENS=${COUNCIL_MAX_INPUT_TOKENS} — launching anyway (COUNCIL_ALLOW_OVERSIZE=1)." | tee /dev/stderr
+    else
+      echo "ERROR: usage plan refused — estimated input ${USAGE_PLAN_MAX_INPUT} tokens for one seat exceeds COUNCIL_MAX_INPUT_TOKENS=${COUNCIL_MAX_INPUT_TOKENS}. Trim the prompt (inline only the diff and the files the review needs), or set COUNCIL_ALLOW_OVERSIZE=1 to launch anyway. Nothing was sent." >&2
+      [[ -n "$OPENROUTER_LISTING_FILE" ]] && rm -f "$OPENROUTER_LISTING_FILE"
+      exit 1
+    fi
+  fi
+fi
+[[ -n "$OPENROUTER_LISTING_FILE" ]] && rm -f "$OPENROUTER_LISTING_FILE"
 echo ""
 
 CODEX_PID=""
@@ -1224,7 +1326,9 @@ if [[ "$RUN_CODEX" == "true" ]]; then
     # --skip-git-repo-check: the skill's isolated-scratch-workspace mode runs in a
     # non-repo dir, where codex otherwise refuses ("Not inside a trusted directory",
     # live 2026-09-06). Harmless under --sandbox read-only.
-    CODEX_ARGS=(exec --sandbox read-only --skip-git-repo-check -c approval_policy=never -o "$CODEX_OUT")
+    # --json: the event stream (to $CODEX_EVENTS, never the terminal) is the only
+    # place native Codex reports its token usage; -o still writes the review itself.
+    CODEX_ARGS=(exec --json --sandbox read-only --skip-git-repo-check -c approval_policy=never -o "$CODEX_OUT")
     if [[ -n "$CODEX_MODEL" ]]; then
       CODEX_ARGS+=(-m "$CODEX_MODEL")
     fi
@@ -1236,6 +1340,7 @@ if [[ "$RUN_CODEX" == "true" ]]; then
     CODEX_ARGS+=(-)
     run_with_timeout codex "${CODEX_ARGS[@]}" \
       < "$PROMPT_FILE_FINAL" \
+      > "$CODEX_EVENTS" \
       2>"$CODEX_ERR" || {
         STATUS=$?
         if [[ "$STATUS" -eq 124 ]]; then
@@ -1295,10 +1400,34 @@ for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
   wait "${SEAT_PIDS[$i]}" || SEAT_STATUS[$i]=$?
 done
 
+# --- Codex actual usage (from the --json event stream; written even when the seat failed) ---
+CODEX_USAGE_LINE=""
+if [[ "$RUN_CODEX" == "true" && "$COUNCIL_USAGE_PLAN" != "off" && -s "$CODEX_EVENTS" ]]; then
+  read -r _pin _pout _psrc <<< "$(price_per_million "" "openai/${CODEX_MODEL_DISPLAY}")"
+  CODEX_USAGE_LINE="$(python3 - "$CODEX_EVENTS" "$CODEX_MODEL_DISPLAY" "$_pin" "$_pout" "$_psrc" "$CODEX_USAGE" <<'PYEOF_CU' || true
+import json, sys
+events, model, pin, pout, psrc, out_path = sys.argv[1:7]
+u = None
+for line in open(events, encoding="utf-8", errors="replace"):
+    line = line.strip()
+    if not line.startswith("{"): continue
+    try: ev = json.loads(line)
+    except Exception: continue
+    if ev.get("type") == "turn.completed" and isinstance(ev.get("usage"), dict):
+        u = ev["usage"]                      # last turn wins; exec runs are single-turn
+if u is None: sys.exit(1)
+i, c, o, r = (int(u.get(k) or 0) for k in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"))
+cost = "?" if pin == "?" else f"${(i*float(pin) + (o+r)*float(pout))/1e6:.2f}"
+with open(out_path, "w") as f:
+    f.write(f"model={model} input_tokens={i} cached_input_tokens={c} output_tokens={o} reasoning_output_tokens={r} est_cost_usd={cost} price_source={psrc}\n")
+print(f"{i/1000:.1f}k in ({c/1000:.1f}k cached) / {o/1000:.1f}k out / {r/1000:.1f}k reasoning ≈ {cost} list")
+PYEOF_CU
+)"
+fi
+
 # --- Validate responses ---
 CODEX_FAIL_REASON=""
 GEMINI_FAIL_REASON=""
-PROMPT_BYTES=$(wc -c < "$PROMPT_FILE_FINAL")
 
 if [[ "$RUN_CODEX" == "true" ]]; then
   if ! validate_response "$CODEX_OUT" "$CODEX_ERR" "$CODEX_STATUS" "$PROMPT_BYTES" "Codex"; then
@@ -1375,7 +1504,7 @@ echo "Council responses ready:"
 if [[ "$RUN_CODEX" == "true" ]]; then
   STATUS_MSG="(success)"
   [[ "$CODEX_STATUS" -ne 0 ]] && STATUS_MSG="(failed${CODEX_FAIL_REASON:+: $CODEX_FAIL_REASON})"
-  echo "  Codex:  $CODEX_OUT $STATUS_MSG"
+  echo "  Codex:  $CODEX_OUT $STATUS_MSG${CODEX_USAGE_LINE:+ — $CODEX_USAGE_LINE}"
 fi
 if [[ "$RUN_GEMINI" == "true" ]]; then
   STATUS_MSG="(success)"
@@ -1385,7 +1514,20 @@ fi
 for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
   STATUS_MSG="(success)"
   [[ "${SEAT_STATUS[$i]}" -ne 0 ]] && STATUS_MSG="(failed${SEAT_REASONS[$i]:+: ${SEAT_REASONS[$i]}})"
-  echo "  $(seat_label "${SEAT_NAMES[$i]}"): ${SEAT_OUTS[$i]} $STATUS_MSG"
+  _ul=""
+  _uf="$TMPDIR_COUNCIL/$(seat_slug "${SEAT_NAMES[$i]}")_usage.log"
+  if [[ -s "$_uf" ]]; then
+    _ul="$(python3 - "$_uf" <<'PYEOF_SU' 2>/dev/null || true
+import re, sys
+kv = dict(re.findall(r"(\w+)=(\S+)", open(sys.argv[1]).read()))
+def k(x):
+    try: return f"{int(x)/1000:.1f}k"
+    except Exception: return "?"
+print(f"{k(kv.get('prompt_tokens'))} in / {k(kv.get('completion_tokens'))} out / {k(kv.get('reasoning_tokens'))} reasoning ≈ ${kv.get('cost_usd','?')} via {kv.get('provider','?')}")
+PYEOF_SU
+)"
+  fi
+  echo "  $(seat_label "${SEAT_NAMES[$i]}"): ${SEAT_OUTS[$i]} $STATUS_MSG${_ul:+ — $_ul}"
 done
 echo ""
 

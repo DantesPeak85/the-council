@@ -21,6 +21,9 @@
 #        key present (Tom 2026-09-19: Qwen/GLM only when asked). `--openrouter qwen` adds the seat.
 #   O20. Provider routing: named seats get `:floor` by default (cheapest host); `none` sends the
 #        bare id, `nitro` is accepted, garbage fails at startup; explicit/raw ids are never suffixed.
+#   O21. Usage plan: pre-launch per-seat estimate (fixed Codex overhead + prompt, output by effort,
+#        list-price cost), post-run actuals from Codex's --json stream and the seat usage logs,
+#        and a per-seat input ceiling that REFUSES before launch (COUNCIL_ALLOW_OVERSIZE=1 overrides).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -345,5 +348,45 @@ run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_OPENROUTER_ROU
 grep -q "COUNCIL_OPENROUTER_ROUTING='cheapest'" "$TMPDIR_TEST/stderr.log" || fail "O20: garbage routing not named in the error"
 grep -q '^MODEL:' "$FAKE_CURL_LOG" && fail "O20: a request was sent despite the invalid routing value"
 pass "O20: :floor by default on script-chosen ids; none/nitro honored; pins and raw ids verbatim; garbage rejected at startup"
+
+echo ""
+# O21: usage plan — estimate before launch, actuals after, ceiling refuses before launch
+: > "$TMPDIR_TEST/codex.log"; : > "$TMPDIR_TEST/gemini.log"
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" GEMINI_API_KEY=fake COUNCIL_GEMINI_BACKEND=gemini COUNCIL_CODEX_EFFORT=high \
+  FAKE_CODEX_LOG="$TMPDIR_TEST/codex.log" FAKE_GEMINI_LOG="$TMPDIR_TEST/gemini.log" \
+  bash "$COUNCIL_SCRIPT" --allow-unsandboxed-gemini --openrouter qwen "$PROMPT" "$PROJECT"
+[[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/stderr.log"; fail "O21: full panel exit $RC"; }
+grep -q '^  Usage plan (estimates' "$TMPDIR_TEST/stdout.log" || fail "O21: usage plan header missing"
+grep -q '^    Codex   .*in ≈ 24.5k fixed + [0-9.]*k prompt = [0-9.]*k   out ≈ 12.0k (effort high; no hard cap on native Codex)   ≈ \$[0-9.]* + \$[0-9.]* = \$[0-9.]* (' "$TMPDIR_TEST/stdout.log" || fail "O21: Codex plan row wrong (got: $(grep '^    Codex' "$TMPDIR_TEST/stdout.log"))"
+grep -q '^    Gemini  .*in ≈ [0-9.]*k prompt   out: CLI-governed   cost: not metered here' "$TMPDIR_TEST/stdout.log" || fail "O21: Gemini plan row wrong"
+grep -q '^    Qwen  qwen/qwen3.10-max:floor: in ≈ [0-9.]*k   out ≤ 32.0k cap, ≈ 12.0k expected (effort high)   ≈ ' "$TMPDIR_TEST/stdout.log" || fail "O21: Qwen plan row wrong (got: $(grep '^    Qwen' "$TMPDIR_TEST/stdout.log"))"
+grep -q '^    Total ≈ \$[0-9.]* at list (Gemini excluded)   ceiling: 100000 estimated input tokens per seat' "$TMPDIR_TEST/stdout.log" || fail "O21: total/ceiling line wrong"
+grep -q 'ARGV:.*--json' "$TMPDIR_TEST/codex.log" || fail "O21: codex not launched with --json (no usage stream)"
+CU="$(find "$PROJECT/.council-tmp" -name codex_usage.log | head -1)"; [[ -s "$CU" ]] || fail "O21: codex_usage.log missing"
+grep -q 'input_tokens=30123 cached_input_tokens=7040 output_tokens=3532 reasoning_output_tokens=1525 est_cost_usd=\$' "$CU" || fail "O21: codex_usage.log content wrong: $(cat "$CU")"
+grep -q '^  Codex:  .*(success) — 30.1k in (7.0k cached) / 3.5k out / 1.5k reasoning ≈ \$[0-9.]* list' "$TMPDIR_TEST/stdout.log" || fail "O21: Codex report line lacks actuals (got: $(grep '^  Codex:' "$TMPDIR_TEST/stdout.log"))"
+grep -q '^  Qwen: .*(success) — [0-9.]*k in / [0-9.]*k out / [0-9.]*k reasoning ≈ \$0.0041 via ' "$TMPDIR_TEST/stdout.log" || fail "O21: Qwen report line lacks actuals (got: $(grep '^  Qwen:' "$TMPDIR_TEST/stdout.log"))"
+# ceiling: prompt (~0.9k) + 24.5k Codex overhead > 1000 → refused before anything launches
+: > "$TMPDIR_TEST/codex.log"
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_MAX_INPUT_TOKENS=1000 FAKE_CODEX_LOG="$TMPDIR_TEST/codex.log" \
+  bash "$COUNCIL_SCRIPT" --codex-only --openrouter qwen "$PROMPT" "$PROJECT"
+[[ $RC -eq 1 ]] || fail "O21: oversize run should exit 1, got $RC"
+grep -q 'ERROR: usage plan refused — estimated input [0-9]* tokens for one seat exceeds COUNCIL_MAX_INPUT_TOKENS=1000' "$TMPDIR_TEST/stderr.log" || fail "O21: refusal message missing"
+[[ ! -s "$TMPDIR_TEST/codex.log" ]] || fail "O21: Codex was launched despite the refusal"
+grep -q '^MODEL:' "$FAKE_CURL_LOG" && fail "O21: an OpenRouter request went out despite the refusal"
+# override: launches, but says so on stdout AND stderr
+: > "$TMPDIR_TEST/codex.log"
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_MAX_INPUT_TOKENS=1000 COUNCIL_ALLOW_OVERSIZE=1 FAKE_CODEX_LOG="$TMPDIR_TEST/codex.log" \
+  bash "$COUNCIL_SCRIPT" --codex-only "$PROMPT" "$PROJECT"
+[[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/stderr.log"; fail "O21: override run exit $RC"; }
+grep -q 'WARNING: estimated input [0-9]* tokens exceeds COUNCIL_MAX_INPUT_TOKENS=1000 — launching anyway' "$TMPDIR_TEST/stdout.log" || fail "O21: override warning missing on stdout"
+grep -q 'launching anyway (COUNCIL_ALLOW_OVERSIZE=1)' "$TMPDIR_TEST/stderr.log" || fail "O21: override warning missing on stderr"
+[[ -s "$TMPDIR_TEST/codex.log" ]] || fail "O21: override did not launch Codex"
+# off switch
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_USAGE_PLAN=off COUNCIL_MAX_INPUT_TOKENS=1000 FAKE_CODEX_LOG="$TMPDIR_TEST/codex.log" \
+  bash "$COUNCIL_SCRIPT" --codex-only "$PROMPT" "$PROJECT"
+[[ $RC -eq 0 ]] || fail "O21: COUNCIL_USAGE_PLAN=off run exit $RC"
+grep -q 'Usage plan' "$TMPDIR_TEST/stdout.log" && fail "O21: plan printed although COUNCIL_USAGE_PLAN=off"
+pass "O21: usage plan rows + total, Codex/seat actuals in the report, ceiling refuses before launch, override + off switch"
 
 echo "ALL OPENROUTER SEAT TESTS PASSED"
