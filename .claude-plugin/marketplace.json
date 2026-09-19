@@ -8,7 +8,7 @@
     {
       "name": "the-council",
       "description": "Multi-model advisory board using Qwen and Gemini by default, with optional Codex",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "source": "./",
       "author": {
         "name": "Tom Wolinitz"

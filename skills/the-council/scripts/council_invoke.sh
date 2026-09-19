@@ -25,6 +25,10 @@
 #   COUNCIL_OPENROUTER_EFFORT — reasoning effort for OpenRouter seats (default: COUNCIL_CODEX_EFFORT; `none` omits it)
 #   COUNCIL_OPENROUTER_MAX_TOKENS — default 32000 (Qwen starves below ~32k)
 #   COUNCIL_QWEN_MODEL / COUNCIL_GLM_MODEL — explicit id for a named seat (skips the live-listing lookup)
+#   COUNCIL_OPENROUTER_ROUTING — provider-routing suffix for NAMED seats' script-chosen ids
+#                      (default: floor = cheapest host serving that exact model; nitro = fastest;
+#                      none = OpenRouter's default balance). Explicit COUNCIL_*_MODEL ids and raw
+#                      vendor/model ids are sent verbatim — a pin stays a pin.
 #   OPENROUTER_MODELS_URL / OPENROUTER_URL — endpoint overrides (tests)
 #   COUNCIL_TIMEOUT  — Max seconds to wait per advisor (default: 600)
 #   AGY_PRINT_TIMEOUT — Override agy --print-timeout (default: 8m)
@@ -583,6 +587,21 @@ OPENROUTER_QWEN_FALLBACK="qwen/qwen3.8-max-0902"   # last-known newest on 2026-0
 OPENROUTER_GLM_FALLBACK="z-ai/glm-5.3"             # last-known newest on 2026-09-06
 OPENROUTER_MAX_TOKENS_DEFAULT=32000                 # Qwen at 9k spent every token on reasoning and returned empty content
 
+# Provider routing for NAMED seats (Tom 2026-09-19): the open-weight flagships
+# are served by several hosts at prices that differ 2-3x for the SAME weights.
+# `:floor` asks OpenRouter for the cheapest host currently serving the exact
+# model (it also admits the slower "flex" tier — fine for a detached background
+# review). Applied only to ids the SCRIPT chose (listing / fallback); an explicit
+# COUNCIL_*_MODEL or a raw vendor/model id is sent verbatim. The usage log
+# records `provider=` so the saving is checkable per run, not assumed.
+COUNCIL_OPENROUTER_ROUTING="${COUNCIL_OPENROUTER_ROUTING:-floor}"
+apply_openrouter_routing() {  # $1 = model id → id with the routing suffix (idempotent; none/'' = verbatim)
+  case "$COUNCIL_OPENROUTER_ROUTING" in
+    none|"") printf '%s' "$1" ;;
+    *) case "$1" in *:*) printf '%s' "$1" ;; *) printf '%s:%s' "$1" "$COUNCIL_OPENROUTER_ROUTING" ;; esac ;;
+  esac
+}
+
 # Fetch the listing (public endpoint, no key) and prove it parses. $1 = out file.
 # $2 = stderr capture (curl + parse diagnostics) so an outage is explainable.
 fetch_openrouter_listing() {
@@ -635,9 +654,9 @@ resolve_openrouter_seat_model() {
   esac
   if [[ -n "$override" ]]; then printf '%s\toverride' "$override"; return 0; fi
   if [[ -n "$listing" && -s "$listing" ]] && picked="$(pick_latest_openrouter_model "$listing" "$seat")"; then
-    printf '%s\tlisting' "$picked"; return 0
+    printf '%s\tlisting' "$(apply_openrouter_routing "$picked")"; return 0
   fi
-  printf '%s\tfallback' "$fallback"
+  printf '%s\tfallback' "$(apply_openrouter_routing "$fallback")"
 }
 
 # Display label (banner / report) and filesystem-safe slug (raw ids carry '/').
@@ -667,7 +686,7 @@ import json, sys
 raw_path, http_code, label, usage_path, partial_path, mode = sys.argv[1:7]
 raw = open(raw_path, "rb").read().decode("utf-8", "replace")
 stripped = raw.lstrip()
-content, usage, served, err = [], {}, None, None
+content, usage, served, provider, err = [], {}, None, None, None
 was_stream, malformed, parse_note = False, 0, ""
 # Terminal state of CHOICE 0 — the one review we return (Codex R3, 2026-09-06):
 # the FIRST finish_reason is binding (a later `stop` cannot launder an earlier
@@ -700,6 +719,7 @@ if stripped.startswith("{"):
     err = data.get("error")
     if not err and data.get("choices"):          # non-streaming shape: a parsed body IS the completion
         served, usage = data.get("model"), data.get("usage") or {}
+        provider = data.get("provider") or provider
         for ch in data["choices"]:
             take_choice(ch, lambda c: (c.get("message") or {}).get("content"))
 else:                                              # SSE
@@ -718,6 +738,7 @@ else:                                              # SSE
         if chunk.get("error"):
             err = chunk["error"]; break             # handled below — after usage + salvage
         served = chunk.get("model") or served
+        provider = chunk.get("provider") or provider
         if chunk.get("usage"):
             usage = chunk["usage"]                  # usage-only trailing events are legitimate
         for ch in chunk.get("choices") or []:
@@ -726,7 +747,7 @@ else:                                              # SSE
 text = "".join(content)
 reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
 with open(usage_path, "w") as f:                   # written BEFORE any verdict: a failed run still shows its cost
-    f.write(f"model_served={served or '?'} http={http_code} finish_reason={finish} "
+    f.write(f"model_served={served or '?'} provider={provider or '?'} http={http_code} finish_reason={finish} "
             f"prompt_tokens={usage.get('prompt_tokens', '?')} completion_tokens={usage.get('completion_tokens', '?')} "
             f"reasoning_tokens={reasoning} cost_usd={usage.get('cost', '?')} chars={len(text)}\n")
 
@@ -778,7 +799,7 @@ PYEOF
 # One seat, one HTTPS call. Files (all under $TMPDIR_COUNCIL, slug-prefixed):
 #   <slug>_request.json  the payload actually sent (key-free by construction)
 #   <slug>_raw.json      the verbatim capture (SSE stream or JSON error body)
-#   <slug>_usage.log     served model / tokens / reasoning tokens / USD cost
+#   <slug>_usage.log     served model + host (provider) / tokens / reasoning tokens / USD cost
 #   <slug>_partial.md    text salvaged from a timed-out stream (when any)
 #   <slug>_response.md   the review, or a [COUNCIL-ADVISOR-FAILURE] placeholder
 # The API key travels ONLY via a mode-600 mktemp header file in the user's
@@ -980,6 +1001,10 @@ if [[ -n "$COUNCIL_OPENROUTER_SEATS" ]]; then
   case "$COUNCIL_OPENROUTER_EFFORT" in
     none|minimal|low|medium|high|xhigh) ;;
     *) echo "ERROR: COUNCIL_OPENROUTER_EFFORT='$COUNCIL_OPENROUTER_EFFORT' — use none|minimal|low|medium|high|xhigh." >&2; exit 1 ;;
+  esac
+  case "$COUNCIL_OPENROUTER_ROUTING" in
+    floor|nitro|none|"") ;;
+    *) echo "ERROR: COUNCIL_OPENROUTER_ROUTING='$COUNCIL_OPENROUTER_ROUTING' — use floor (cheapest host, default) | nitro (fastest) | none." >&2; exit 1 ;;
   esac
   command -v curl &>/dev/null    || { echo "ERROR: OpenRouter seats need 'curl' in PATH." >&2; exit 1; }
   # `-H @file` (how the key travels) needs curl >= 7.55; older curl would send the
@@ -1197,6 +1222,7 @@ for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
 done
 [[ -n "$OPENROUTER_LISTING_NOTE" ]] && echo "  WARNING: $OPENROUTER_LISTING_NOTE"
 [[ "$RUN_OPENROUTER" == "true" ]] && echo "  OpenRouter effort/max_tokens: ${COUNCIL_OPENROUTER_EFFORT} / ${COUNCIL_OPENROUTER_MAX_TOKENS} (COUNCIL_OPENROUTER_EFFORT / COUNCIL_OPENROUTER_MAX_TOKENS)"
+[[ "$RUN_OPENROUTER" == "true" ]] && echo "  OpenRouter routing: ${COUNCIL_OPENROUTER_ROUTING:-none} for named seats (floor = cheapest host serving the model; COUNCIL_OPENROUTER_ROUTING=none to disable; served host lands in <seat>_usage.log)"
 echo "  Working dir:  $WORK_DIR"
 echo "  Timeout:      ${TIMEOUT_SECS}s ($([[ -n "$TIMEOUT_CMD" ]] && echo "$TIMEOUT_CMD" || echo "bash watchdog"))"
 # Agy-specific banner lines: only meaningful when the resolved backend is agy

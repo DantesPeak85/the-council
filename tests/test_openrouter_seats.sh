@@ -17,6 +17,8 @@
 #        variants and alias rows ignored). Listing unreachable → last-known id + loud WARNING.
 #        Listing reachable but family rule matches nothing → last-known id + WARNING.
 #   O12. An explicit COUNCIL_*_MODEL skips the listing call entirely.
+#   O20. Provider routing: named seats get `:floor` by default (cheapest host); `none` sends the
+#        bare id, `nitro` is accepted, garbage fails at startup; explicit/raw ids are never suffixed.
 #   O19. The no-flag default invokes Qwen + Gemini and does not invoke Codex.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -50,7 +52,7 @@ seat_file() { find "$PROJECT/.council-tmp" -name "$1" | head -1; }
 run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_CODEX_EFFORT=high \
   bash "$COUNCIL_SCRIPT" --openrouter-only --openrouter qwen "$PROMPT" "$PROJECT"
 [[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/stderr.log"; fail "O1: exit $RC"; }
-grep -q '^MODEL:qwen/qwen3.10-max$' "$FAKE_CURL_LOG" || fail "O1: qwen did not resolve to the newest flagship (got $(grep '^MODEL' "$FAKE_CURL_LOG"))"
+grep -q '^MODEL:qwen/qwen3.10-max:floor$' "$FAKE_CURL_LOG" || fail "O1: qwen did not resolve to the newest flagship with :floor routing (got $(grep '^MODEL' "$FAKE_CURL_LOG"))"
 grep -q '^LISTING:ok$' "$FAKE_CURL_LOG" || fail "O1: live listing was not consulted"
 grep -q '^MAX_TOKENS:32000$' "$FAKE_CURL_LOG" || fail "O1: max_tokens default is not 32000"
 grep -q '^EFFORT:high$' "$FAKE_CURL_LOG" || fail "O1: effort did not follow COUNCIL_CODEX_EFFORT"
@@ -65,7 +67,7 @@ grep -q 'no rollback gate for the migration step' "$RESP" || fail "O1: SSE chunk
 USAGE="$(seat_file qwen_usage.log)"; grep -q 'model_served=fake/served-0902' "$USAGE" || fail "O1: usage log missing served model"
 grep -q 'cost_usd=0.0041' "$USAGE" || fail "O1: usage log missing cost"
 [[ "$(tail -1 "$TMPDIR_TEST/stdout.log")" == "$RESP" ]] || fail "O1: response path not printed last"
-grep -q 'OpenRouter seat: Qwen → qwen/qwen3.10-max (newest on the live listing)' "$TMPDIR_TEST/stdout.log" || fail "O1: banner line missing/mislabeled"
+grep -q 'OpenRouter seat: Qwen → qwen/qwen3.10-max:floor (newest on the live listing)' "$TMPDIR_TEST/stdout.log" || fail "O1: banner line missing/mislabeled"
 grep -q 'Qwen: .*(success)' "$TMPDIR_TEST/stdout.log" || fail "O1: report line missing"
 # A clean run must be a CLEAN success: no partial-success downgrade, no shell error
 # (live 2026-09-06: an EXIT trap naming a function-local died 'unbound variable'
@@ -90,7 +92,7 @@ pass "O2: key only via mode-600 header file, deleted after the call"
 run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" \
   bash "$COUNCIL_SCRIPT" --openrouter-only --openrouter "glm, vendor/x-model-2" "$PROMPT" "$PROJECT"
 [[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/stderr.log"; fail "O3: exit $RC"; }
-grep -q '^MODEL:z-ai/glm-5.3$' "$FAKE_CURL_LOG" || fail "O3: glm pin not resolved"
+grep -q '^MODEL:z-ai/glm-5.3:floor$' "$FAKE_CURL_LOG" || fail "O3: glm pin not resolved"
 grep -q '^MODEL:vendor/x-model-2$' "$FAKE_CURL_LOG" || fail "O3: raw id not passed verbatim"
 [[ -s "$(seat_file glm_response.md)" ]] || fail "O3: glm_response.md missing"
 [[ -s "$(seat_file vendor_x-model-2_response.md)" ]] || fail "O3: raw-id response not slugged"
@@ -168,7 +170,7 @@ grep -q '^MAX_TOKENS:40000$' "$FAKE_CURL_LOG" || fail "O9: max_tokens override i
 run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_OPENROUTER_SEATS=glm \
   bash "$COUNCIL_SCRIPT" --openrouter-only "$PROMPT" "$PROJECT"
 [[ $RC -eq 0 ]] || fail "O9b: env-only seats exit $RC"
-grep -q '^MODEL:z-ai/glm-5.3$' "$FAKE_CURL_LOG" || fail "O9b: COUNCIL_OPENROUTER_SEATS env ignored"
+grep -q '^MODEL:z-ai/glm-5.3:floor$' "$FAKE_CURL_LOG" || fail "O9b: COUNCIL_OPENROUTER_SEATS env ignored"
 pass "O9: overrides, dedupe, flag-beats-env, effort=none"
 
 # O10
@@ -187,19 +189,19 @@ pass "O10: codex + seat combined; aggregate exit reflects the failed seat"
 run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" FAKE_CURL_LISTING_MODE=fail \
   bash "$COUNCIL_SCRIPT" --openrouter-only --openrouter "qwen,glm" "$PROMPT" "$PROJECT"
 [[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/stderr.log"; fail "O11: fallback run exit $RC"; }
-grep -q '^MODEL:qwen/qwen3.8-max-0902$' "$FAKE_CURL_LOG" || fail "O11: qwen fallback id not used"
-grep -q '^MODEL:z-ai/glm-5.3$' "$FAKE_CURL_LOG" || fail "O11: glm fallback id not used"
+grep -q '^MODEL:qwen/qwen3.8-max-0902:floor$' "$FAKE_CURL_LOG" || fail "O11: qwen fallback id not used"
+grep -q '^MODEL:z-ai/glm-5.3:floor$' "$FAKE_CURL_LOG" || fail "O11: glm fallback id not used"
 grep -q 'WARNING: OpenRouter model listing unreachable' "$TMPDIR_TEST/stderr.log" || fail "O11: no loud warning on stderr"
 grep -q 'FALLBACK last-known id' "$TMPDIR_TEST/stdout.log" || fail "O11: banner does not flag the fallback"
 grep -q 'WARNING: OpenRouter model listing unreachable' "$TMPDIR_TEST/stdout.log" || fail "O11: banner warning line missing"
 run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" FAKE_CURL_LISTING_MODE=garbage \
   bash "$COUNCIL_SCRIPT" --openrouter-only --openrouter qwen "$PROMPT" "$PROJECT"
 [[ $RC -eq 0 ]] || fail "O11b: garbage listing run exit $RC"
-grep -q '^MODEL:qwen/qwen3.8-max-0902$' "$FAKE_CURL_LOG" || fail "O11b: unparseable listing did not fall back"
+grep -q '^MODEL:qwen/qwen3.8-max-0902:floor$' "$FAKE_CURL_LOG" || fail "O11b: unparseable listing did not fall back"
 run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" FAKE_CURL_LISTING_MODE=empty \
   bash "$COUNCIL_SCRIPT" --openrouter-only --openrouter glm "$PROMPT" "$PROJECT"
 [[ $RC -eq 0 ]] || fail "O11c: empty listing run exit $RC"
-grep -q '^MODEL:z-ai/glm-5.3$' "$FAKE_CURL_LOG" || fail "O11c: no-match did not fall back"
+grep -q '^MODEL:z-ai/glm-5.3:floor$' "$FAKE_CURL_LOG" || fail "O11c: no-match did not fall back"
 grep -q "no model on the listing matched the 'glm' family rule" "$TMPDIR_TEST/stderr.log" || fail "O11c: no-match warning missing"
 grep -q 'listing loaded but nothing matched the family rule' "$TMPDIR_TEST/stdout.log" || fail "O11c: banner must say the listing LOADED (not 'unavailable')"
 grep -q 'listing unavailable' "$TMPDIR_TEST/stdout.log" && fail "O11c: banner falsely claims the listing was unavailable"
@@ -309,4 +311,29 @@ grep -q 'Invoking The Council (Gemini-only + OpenRouter (qwen))' "$TMPDIR_TEST/s
 pass "O19: default panel is Qwen + Gemini, with no Codex usage"
 
 echo ""
+# O20: provider routing suffix — default :floor on script-chosen ids only
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_OPENROUTER_ROUTING=none \
+  bash "$COUNCIL_SCRIPT" --openrouter-only --openrouter "qwen,glm" "$PROMPT" "$PROJECT"
+[[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/stderr.log"; fail "O20: routing=none exit $RC"; }
+grep -q '^MODEL:qwen/qwen3.10-max$' "$FAKE_CURL_LOG" || fail "O20: routing=none still suffixed qwen (got $(grep '^MODEL' "$FAKE_CURL_LOG" | tr '\n' ' '))"
+grep -q '^MODEL:z-ai/glm-5.3$' "$FAKE_CURL_LOG" || fail "O20: routing=none still suffixed glm"
+grep -q 'OpenRouter routing: none' "$TMPDIR_TEST/stdout.log" || fail "O20: banner does not state routing=none"
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_OPENROUTER_ROUTING=nitro \
+  bash "$COUNCIL_SCRIPT" --openrouter-only --openrouter qwen "$PROMPT" "$PROJECT"
+[[ $RC -eq 0 ]] || fail "O20: routing=nitro exit $RC"
+grep -q '^MODEL:qwen/qwen3.10-max:nitro$' "$FAKE_CURL_LOG" || fail "O20: routing=nitro not applied"
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_QWEN_MODEL=qwen/pinned \
+  bash "$COUNCIL_SCRIPT" --openrouter-only --openrouter "qwen,vendor/raw:nitro,vendor/plain" "$PROMPT" "$PROJECT"
+[[ $RC -eq 0 ]] || fail "O20: pinned+raw exit $RC"
+grep -q '^MODEL:qwen/pinned$' "$FAKE_CURL_LOG" || fail "O20: explicit COUNCIL_QWEN_MODEL was suffixed — a pin must stay a pin"
+grep -q '^MODEL:vendor/raw:nitro$' "$FAKE_CURL_LOG" || fail "O20: raw id with its own suffix was altered"
+grep -q '^MODEL:vendor/plain$' "$FAKE_CURL_LOG" || fail "O20: raw id without suffix was suffixed"
+grep -q 'OpenRouter routing: floor' "$TMPDIR_TEST/stdout.log" || fail "O20: banner does not state the default routing"
+run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" COUNCIL_OPENROUTER_ROUTING=cheapest \
+  bash "$COUNCIL_SCRIPT" --openrouter-only --openrouter qwen "$PROMPT" "$PROJECT"
+[[ $RC -ne 0 ]] || fail "O20: garbage routing value accepted"
+grep -q "COUNCIL_OPENROUTER_ROUTING='cheapest'" "$TMPDIR_TEST/stderr.log" || fail "O20: garbage routing not named in the error"
+grep -q '^MODEL:' "$FAKE_CURL_LOG" && fail "O20: a request was sent despite the invalid routing value"
+pass "O20: :floor by default on script-chosen ids; none/nitro honored; pins and raw ids verbatim; garbage rejected at startup"
+
 echo "ALL OPENROUTER SEAT TESTS PASSED"

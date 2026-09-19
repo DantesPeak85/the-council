@@ -210,7 +210,11 @@ nohup bash <skill_dir>/scripts/council_invoke.sh --openrouter-only --openrouter 
 Named seats resolve AT LAUNCH to the newest flagship on OpenRouter's live listing
 (numeric version order; flash/turbo/preview/thinking variants ignored) — the banner
 prints the id and its source (`newest on the live listing` / `explicit id` /
-`FALLBACK last-known id`). Never hand-roll a curl for these seats again; that is how
+`FALLBACK last-known id`). Script-chosen ids carry the `:floor` routing suffix — OpenRouter
+picks the cheapest host currently serving that exact model (same weights; hosts differ 2-3×
+in price). `COUNCIL_OPENROUTER_ROUTING=none` sends the bare id, `nitro` picks the fastest;
+explicit `COUNCIL_*_MODEL` pins and raw ids are never suffixed. `<seat>_usage.log` records
+`provider=` so the saving is checkable per run. Never hand-roll a curl for these seats again; that is how
 the truncated-listing wrong-model review happened. Responses stream, so a timeout
 still salvages partial text (`<seat>_partial.md`), and every run writes
 `<seat>_usage.log` with the served model, reasoning tokens and USD cost. Measured
@@ -536,8 +540,8 @@ Two different things share the OpenRouter account:
 | Seat | Model id | Notes |
 |---|---|---|
 | Codex fallback | **`openai/gpt-5.6-sol`** | Never a lesser variant (id confirmed on OpenRouter's listing 2026-09-08). Sol-era evidence: 5.3-codex → REVISE vs 5.6-sol → RESTRUCTURE on an identical prompt, 2026-08-04. |
-| Qwen (default) | **newest `qwen/qwen<ver>-max` on the live listing** (2026-09-06: `qwen3.8-max-0902`) | Resolved by the script at launch; `max_tokens` 32000 default; starvation is detected and named. ~$0.08 per 26 KB diff review at medium. |
-| GLM (opt-in) | **newest `z-ai/glm-<ver>` on the live listing** (2026-09-06: `glm-5.3`) | Unmeasured lens; ~$0.02 per 26 KB diff review at medium. Not part of any tier by default. |
+| Qwen (default) | **newest `qwen/qwen<ver>-max` on the live listing** + `:floor` (2026-09-06: `qwen3.8-max-0902`) | Resolved by the script at launch; `max_tokens` 32000 default; starvation is detected and named. ~$0.08 per 26 KB diff review at medium. |
+| GLM (opt-in) | **newest `z-ai/glm-<ver>` on the live listing** + `:floor` (2026-09-06: `glm-5.3`) | Unmeasured lens; ~$0.02 per 26 KB diff review at medium. Not part of any tier by default. |
 
 Operational notes that cost a session to learn:
 
