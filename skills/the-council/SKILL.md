@@ -192,6 +192,15 @@ Write the composed prompt to a temporary file. Include all relevant context inli
    severity. Suppress low-confidence nitpicks; report only findings you
    would defend in review."
 
+5. **Two-sided harm** (EVERY review, every seat — Tom 2026-09-28): the harm
+   question asked one way ("who could it hurt?") only ever finds reasons to add
+   guards — the ratchet below. Prepend block 5 from `references/prompt-templates.md`:
+   weigh harm from saying too much AND from withholding (blocked education, hidden
+   content, generic fallback); any proposed restriction must name the untrue claim
+   it prevents and one true output it would wrongly block; recommending LESS
+   restriction is a first-class finding. This is the missing counter-question the
+   2026-07-28 ratchet lesson prescribed and never shipped.
+
 ### 3. Invoke The Council (Progressive)
 
 Invoke each advisor as a **separate detached process** so results can be presented as they arrive.

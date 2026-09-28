@@ -62,6 +62,24 @@ Sol over-flagged (CodeRabbit benchmark: 31.6% actionable precision). Instruct:
 Rank findings by severity. Suppress low-confidence nitpicks; report only findings you would defend in review.
 ```
 
+### 5. Two-sided harm (every review — Tom 2026-09-28)
+
+"Who could it hurt?" asked one way only has no failing state toward too-quiet: across July–September 2026 Council seats
+proposed widening guards/gates/exclusions round after round, the owner declined each one, and three of his rulings were
+undone anyway (the ratchet named in SKILL.md "Council ratchets guards, never releases"). Instruct:
+
+```text
+Weigh harm in BOTH directions and report both:
+(a) harm from saying too much or wrongly — an untrue claim about the user, privacy, safety, cost, irreversibility;
+(b) harm from withholding — a guard, gate, filter or exclusion that blocks true content or education, hides a screen or
+    topic from a group of users, or replaces real output with generic fallback. That user gets a worse product; it is a
+    real harm, not a safe default.
+Any restriction you propose must name (1) the exact untrue claim or concrete harm it prevents and (2) one true, useful
+output it would wrongly block. A proposal that cannot name both is not a finding. Recommending LESS restriction is a
+first-class finding. If the project states a content policy (e.g. a "Content Policy" section in CLAUDE.md), judge against
+it; do not re-litigate it.
+```
+
 ## Context Instructions (per advisor)
 
 Replace `{advisor_context_instruction}` with the appropriate line:
@@ -78,7 +96,7 @@ Replace `{advisor_context_instruction}` with the appropriate line:
 
 ## Code Review
 
-*Prepend: defensive framing (always); no-explore for large/multi-file diffs; doc-provenance if it cites owner-revisable docs; nitpick suppression (always).*
+*Prepend: defensive framing (always); no-explore for large/multi-file diffs; doc-provenance if it cites owner-revisable docs; nitpick suppression (always); two-sided harm (always).*
 
 ```
 Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
@@ -103,7 +121,7 @@ Be specific — reference file names and line numbers.
 
 ## Architecture / Planning
 
-*Prepend: defensive framing (always); no-explore directive (plan reviews are fully inline); doc-provenance if the plan cites owner-revisable docs; nitpick suppression (always).*
+*Prepend: defensive framing (always); no-explore directive (plan reviews are fully inline); doc-provenance if the plan cites owner-revisable docs; nitpick suppression (always); two-sided harm (always).*
 
 ```
 Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
@@ -117,7 +135,7 @@ Plan:
 
 Analyze:
 1. **Feasibility**: Can this be implemented as described?
-2. **Risks**: What could go wrong? What's underestimated?
+2. **Risks — both ways**: What could go wrong by doing too much AND by withholding/over-restricting? What's underestimated?
 3. **Alternatives**: Are there better approaches? Trade-offs?
 4. **Dependencies**: Missing dependencies or ordering issues?
 5. **Recommendation**: Expand on your verdict — if not APPROVE, specify exactly what to change.
@@ -128,7 +146,7 @@ Codex: ground your analysis in the actual codebase; Gemini: ground it in the inl
 
 ## Debugging
 
-*Prepend: defensive framing (always); no-explore if the prompt references many files; doc-provenance if it cites owner-revisable docs; nitpick suppression (always).*
+*Prepend: defensive framing (always); no-explore if the prompt references many files; doc-provenance if it cites owner-revisable docs; nitpick suppression (always); two-sided harm (always).*
 
 ```
 Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
@@ -157,7 +175,7 @@ Reference specific files and functions.
 
 ## General Advisory
 
-*Prepend: defensive framing (always); no-explore if referencing many files; doc-provenance if it cites owner-revisable docs; nitpick suppression (always).*
+*Prepend: defensive framing (always); no-explore if referencing many files; doc-provenance if it cites owner-revisable docs; nitpick suppression (always); two-sided harm (always).*
 
 ```
 Begin your response with a `VERDICT:` line (e.g. `VERDICT: APPROVE — one-sentence reason`). Valid verdicts: APPROVE, APPROVE-WITH-CHANGES, REVISE, RESTRUCTURE.
@@ -171,7 +189,7 @@ You are a senior engineering advisor. Consider this question:
 Provide:
 1. **Analysis**: Key considerations and trade-offs
 2. **Recommendation**: Your advised approach with reasoning
-3. **Caveats**: Risks, assumptions, or areas needing more info
+3. **Caveats**: Risks in both directions (too much / too little), assumptions, or areas needing more info
 
 {advisor_context_instruction}
 Be concise and actionable.
