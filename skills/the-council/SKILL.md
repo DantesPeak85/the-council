@@ -531,7 +531,7 @@ MUST precede deletion):
 Both advisors run with **OS-enforced read-only sandboxes** on macOS. Neither can write to your project directory; tool calls that try to write fail at the OS layer.
 
 - **Codex**: `--sandbox read-only` — Codex's built-in OS-level filesystem deny-write.
-- **Gemini (`agy`)** on **macOS**: wrapped in `sandbox-exec` using a deny-write profile at `scripts/council_sandbox.sb`. The profile allows reads everywhere; allows writes only to `~/.gemini/`, the per-invocation `.council-tmp/<...>/` dir, system temp (`/tmp`, `/private/tmp`, `/private/var/folders`), and the agy-specific subdirs under `~/Library/Caches/` (`agy/`, `Google/`). All other writes (including the project tree) are blocked at the OS layer.
+- **Gemini (`agy`)** on **macOS**: wrapped in `sandbox-exec` using a deny-write profile at `skills/the-council/scripts/council_sandbox.sb` (next to `council_invoke.sh`). The profile allows reads everywhere; allows writes only to `~/.gemini/`, the per-invocation `.council-tmp/<...>/` dir, system temp (`/tmp`, `/private/tmp`, `/private/var/folders`), and the agy-specific subdirs under `~/Library/Caches/` (`agy/`, `Google/`). All other writes (including the project tree) are blocked at the OS layer.
 - **Gemini (`agy`)** on **non-macOS**: `sandbox-exec` is unavailable. The script REFUSES to run agy unless the caller passes `--allow-unsandboxed-gemini`, in which case agy runs unsandboxed with a loud warning — the diff safety net below is the only protection in that mode. Or use `--codex-only` to skip Gemini entirely.
 
 ### Diff safety net (defense in depth — runs on all platforms)

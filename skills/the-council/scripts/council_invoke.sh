@@ -249,10 +249,14 @@ strip_pty_artifacts() {
 invoke_gemini_agy() {
   local raw_out="$TMPDIR_COUNCIL/gemini_raw_pty.out"
   local driver_prompt="Read the file review_request.md in your workspace directory and respond to it fully. Output ONLY your review — no preamble about the workspace. Start your response with a VERDICT: line."
-  local agy_args=(--print --add-dir "$TMPDIR_COUNCIL"
+  # agy 1.2.x: --print/--prompt is a STRING flag that takes the prompt as its
+  # value. The old `--print --add-dir DIR ... --prompt P` shape made agy read
+  # "--add-dir" as the prompt and abort. Every other flag goes first and the
+  # prompt is attached with `=` so it can never be mistaken for a flag.
+  local agy_args=(--add-dir "$TMPDIR_COUNCIL"
                   --dangerously-skip-permissions
                   --print-timeout "$AGY_PRINT_TIMEOUT"
-                  --prompt "$driver_prompt")
+                  "--print=$driver_prompt")
   if [[ -n "$COUNCIL_GEMINI_MODEL" ]]; then
     agy_args=(--model "$COUNCIL_GEMINI_MODEL" "${agy_args[@]}")
   fi
