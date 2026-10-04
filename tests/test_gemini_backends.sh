@@ -2,7 +2,7 @@
 # v1.4.0 Gemini lane tests.
 # agy backend:
 #   A1. No --add-dir <project>: agy must receive --add-dir <council tmpdir> only
-#   A2. review_request.md exists in the agy workspace; --prompt is a SHORT driver
+#   A2. review_request.md exists in the agy workspace; --print=<driver> is a SHORT driver
 #   A3. pty wrap: fake agy only emits on a TTY — output must still be captured
 #   A4. NO maxSessionTurns injection: ~/.gemini/antigravity-cli/settings.json untouched
 #   A5. Response containing 'policy'/'blocked' words is NOT flagged as failure
@@ -47,8 +47,11 @@ set -e
 grep -Eq "ARGV:.*--add-dir ${PROJECT}( |\$)" "$FAKE_AGY_LOG" && fail "agy still gets project --add-dir (agentic exploration surface)"
 grep -q 'ARGV:.*--add-dir.*\.council-tmp' "$FAKE_AGY_LOG" || fail "agy workspace is not the council tmpdir"
 grep -q 'REQUEST_FILE_FOUND' "$FAKE_AGY_LOG" || fail "review_request.md missing from agy workspace"
-grep -q 'ARGV:.*--prompt' "$FAKE_AGY_LOG" || fail "agy prompt not passed via --prompt"
-pass "A1/A2: tmpdir workspace + file-based request + --prompt driver"
+# agy 1.2.x: --print takes the prompt as its VALUE, so a bare `--print`
+# followed by another flag makes agy read that flag as the prompt and abort.
+grep -q 'ARGV:.*--print=' "$FAKE_AGY_LOG" || fail "agy prompt not attached via --print=<prompt>"
+grep -Eq 'ARGV:.*--(print|prompt)( |$)' "$FAKE_AGY_LOG" && fail "bare --print/--prompt: agy 1.2.x would take the next arg as the prompt"
+pass "A1/A2: tmpdir workspace + file-based request + --print=<driver>"
 
 RESP="$(find "$PROJECT/.council-tmp" -name gemini_response.md | head -1)"
 [[ -s "$RESP" ]] || fail "A3: no captured agy output (pty wrap broken?)"
