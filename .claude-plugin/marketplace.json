@@ -1,6 +1,6 @@
 {
   "name": "the-council-marketplace",
-  "description": "Marketplace for The Council \u2014 a multi-model advisory board skill",
+  "description": "Tom Wolinitz's Claude Code plugins: The Council and switch-handoff",
   "owner": {
     "name": "DantesPeak85"
   },
@@ -10,6 +10,15 @@
       "description": "Multi-model advisory board using Codex CLI and Gemini CLI",
       "version": "1.6.5",
       "source": "./",
+      "author": {
+        "name": "Tom Wolinitz"
+      }
+    },
+    {
+      "name": "switch-handoff",
+      "description": "Write a handoff before switching Claude accounts and load it after the switch",
+      "version": "1.0.0",
+      "source": "./plugins/switch-handoff",
       "author": {
         "name": "Tom Wolinitz"
       }

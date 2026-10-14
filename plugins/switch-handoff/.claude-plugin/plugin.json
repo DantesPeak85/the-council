@@ -1,0 +1,6 @@
+{
+  "name": "switch-handoff",
+  "description": "Write a handoff before switching Claude accounts and load it after, so the new session picks up where the old one stopped",
+  "version": "1.0.0",
+  "author": { "name": "Tom Wolinitz" }
+}
