@@ -41,6 +41,9 @@ set -euo pipefail
 # (e.g., council_sandbox.sb).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX_PROFILE="$SCRIPT_DIR/council_sandbox.sb"
+# Post-run cost guard (COUNCIL_COST_ALARM_RATIO, default 3): compares actual cost to the usage-plan estimate.
+# shellcheck source=council_cost_alarm.sh
+source "$SCRIPT_DIR/council_cost_alarm.sh"
 
 # --- Resolve timeout command (macOS compatibility) ---
 if command -v gtimeout &>/dev/null; then
@@ -1280,6 +1283,7 @@ fi
 # mostly fixed overhead + the prompt, the output side is set by effort.
 USAGE_PLAN_MAX_INPUT=0
 USAGE_PLAN_TOTAL="?"
+CODEX_PLAN_EST="?"; SEAT_PLAN_EST=()
 if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
   echo "  Usage plan (estimates: 1 token ≈ ${TOKEN_BYTES} bytes; prices = OpenRouter list, USD; prompt ${PROMPT_BYTES} B ≈ $(ktok "$PROMPT_TOKENS_EST") tokens):"
   _costs=()
@@ -1287,6 +1291,7 @@ if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
     _in=$(( COUNCIL_CODEX_OVERHEAD_TOKENS + PROMPT_TOKENS_EST )); _out=$(expected_output_tokens "$COUNCIL_CODEX_EFFORT")
     read -r _pin _pout _psrc <<< "$(price_per_million "$OPENROUTER_LISTING_FILE" "openai/${CODEX_MODEL_DISPLAY}")"
     _cin=$(usd "$_in" "$_pin"); _cout=$(usd "$_out" "$_pout"); _c=$(usd_add "$_cin" "$_cout"); _costs+=("$_c")
+    CODEX_PLAN_EST="$_c"
     (( _in > USAGE_PLAN_MAX_INPUT )) && USAGE_PLAN_MAX_INPUT=$_in
     echo "    Codex   ${CODEX_MODEL_DISPLAY}: in ≈ $(ktok "$COUNCIL_CODEX_OVERHEAD_TOKENS") fixed + $(ktok "$PROMPT_TOKENS_EST") prompt = $(ktok "$_in")   out ≈ $(ktok "$_out") (effort ${COUNCIL_CODEX_EFFORT}; no hard cap on native Codex)   ≈ ${_cin} + ${_cout} = ${_c} (${_psrc} price)"
   fi
@@ -1298,6 +1303,7 @@ if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
     _in=$(( PROMPT_TOKENS_EST + 150 )); _out=$(expected_output_tokens "$COUNCIL_OPENROUTER_EFFORT")
     read -r _pin _pout _psrc <<< "$(price_per_million "$OPENROUTER_LISTING_FILE" "${SEAT_MODELS[$i]}")"
     _cin=$(usd "$_in" "$_pin"); _cout=$(usd "$_out" "$_pout"); _c=$(usd_add "$_cin" "$_cout"); _costs+=("$_c")
+    SEAT_PLAN_EST[$i]="$_c"
     (( _in > USAGE_PLAN_MAX_INPUT )) && USAGE_PLAN_MAX_INPUT=$_in
     echo "    $(seat_label "${SEAT_NAMES[$i]}")  ${SEAT_MODELS[$i]}: in ≈ $(ktok "$_in")   out ≤ $(ktok "$COUNCIL_OPENROUTER_MAX_TOKENS") cap, ≈ $(ktok "$_out") expected (effort ${COUNCIL_OPENROUTER_EFFORT})   ≈ ${_cin} + ${_cout} = ${_c} (${_psrc} price)"
   done
@@ -1326,7 +1332,15 @@ GEMINI_PID=""
 # approval) that contradicted --sandbox read-only and could pause headless runs.
 if [[ "$RUN_CODEX" == "true" ]]; then
   (
-    cd "$WORK_DIR"
+    # Cost-overrun fix (23 Nov, $6.94 vs $0.68 and $13.25 vs $0.95): the seat reads the prompt
+    # from stdin and runs in a fresh EMPTY folder with the shell tool off, so it cannot explore the
+    # repo or run tests. COUNCIL_CODEX_REPO_ACCESS=1 restores the old behaviour (cd $WORK_DIR, shell on)
+    # for diff reviews that rely on repo adjacency.
+    if [[ "${COUNCIL_CODEX_REPO_ACCESS:-0}" == "1" ]]; then
+      cd "$WORK_DIR"
+    else
+      CODEX_EMPTY_DIR="$(mktemp -d "$TMPDIR_COUNCIL/codex_empty.XXXXXX")" && cd "$CODEX_EMPTY_DIR"
+    fi
     # --skip-git-repo-check: the skill's isolated-scratch-workspace mode runs in a
     # non-repo dir, where codex otherwise refuses ("Not inside a trusted directory",
     # live 2026-09-06). Harmless under --sandbox read-only.
@@ -1340,6 +1354,9 @@ if [[ "$RUN_CODEX" == "true" ]]; then
     # silently under-powers reviews). COUNCIL_CODEX_EFFORT=config defers to config.
     if [[ "$COUNCIL_CODEX_EFFORT" != "config" ]]; then
       CODEX_ARGS+=(-c "model_reasoning_effort=${COUNCIL_CODEX_EFFORT}")
+    fi
+    if [[ "${COUNCIL_CODEX_REPO_ACCESS:-0}" != "1" ]]; then
+      CODEX_ARGS+=(--disable shell_tool --disable unified_exec)
     fi
     CODEX_ARGS+=(-)
     run_with_timeout codex "${CODEX_ARGS[@]}" \
@@ -1427,6 +1444,22 @@ with open(out_path, "w") as f:
 print(f"{i/1000:.1f}k in ({c/1000:.1f}k cached) / {o/1000:.1f}k out / {r/1000:.1f}k reasoning ≈ {cost} list")
 PYEOF_CU
 )"
+fi
+
+# --- Cost alarm: actual vs usage-plan estimate (ratio >= COUNCIL_COST_ALARM_RATIO, default 3) ---
+COST_ALARM_LINES=""
+if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
+  if [[ "$RUN_CODEX" == "true" && -s "$CODEX_EVENTS" ]]; then
+    read -r _pin _pout _psrc <<< "$(price_per_million "" "openai/${CODEX_MODEL_DISPLAY}")"
+    _act="$(council_codex_actual_cost "$CODEX_EVENTS" "$_pin" "$_pout" 2>/dev/null || echo '?')"
+    _al="$(council_cost_check "Codex" "$_act" "$CODEX_PLAN_EST")" || COST_ALARM_LINES+="$_al"$'\n'
+  fi
+  for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
+    _uf="$TMPDIR_COUNCIL/$(seat_slug "${SEAT_NAMES[$i]}")_usage.log"
+    [[ -s "$_uf" ]] || continue
+    _act="$(sed -n 's/.*cost_usd=\([^ ]*\).*/\1/p' "$_uf" | head -1)"
+    _al="$(council_cost_check "$(seat_label "${SEAT_NAMES[$i]}")" "${_act:-?}" "${SEAT_PLAN_EST[$i]:-?}")" || COST_ALARM_LINES+="$_al"$'\n'
+  done
 fi
 
 # --- Validate responses ---
@@ -1533,6 +1566,7 @@ PYEOF_SU
   fi
   echo "  $(seat_label "${SEAT_NAMES[$i]}"): ${SEAT_OUTS[$i]} $STATUS_MSG${_ul:+ — $_ul}"
 done
+[[ -n "$COST_ALARM_LINES" ]] && printf '%s' "$COST_ALARM_LINES"
 echo ""
 
 # Output the paths for the caller to read
