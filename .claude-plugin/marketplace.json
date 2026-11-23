@@ -8,7 +8,7 @@
     {
       "name": "the-council",
       "description": "Multi-model advisory board using Codex CLI and Gemini CLI",
-      "version": "1.6.5",
+      "version": "1.6.6",
       "source": "./",
       "author": {
         "name": "Tom Wolinitz"
