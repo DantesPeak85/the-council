@@ -231,7 +231,11 @@ level implies (Codex has no hard output cap — effort IS the lever; OpenRouter 
 input exceeds `COUNCIL_MAX_INPUT_TOKENS` (default 100,000) is REFUSED before launch** — trim
 the prompt, or `COUNCIL_ALLOW_OVERSIZE=1` to launch loudly. After the run the report line of
 every seat carries its ACTUAL tokens and cost: Codex's from its `--json` event stream
-(`codex_usage.log`), the OpenRouter seats' from `<seat>_usage.log`. Quote these numbers to
+(`codex_usage.log`), the OpenRouter seats' from `<seat>_usage.log`, the gemini-cli seat's from its JSON token stats.
+**Gemini seat (1.6.7)**: the plan row shows the routed model and an estimate at Google list price
+(Hydrogen $1.50/$7.50, Neon $3/$15, Carbon and Argon $2/$10 until 30 Nov 2026 then $4/$20, per 1M
+tokens; ~7.8k fixed input overhead); the total includes it and the actual Gemini cost feeds the cost
+alarm. On the agy backend the seat is not metered and the total says `(Gemini excluded)`. Quote these numbers to
 Tom with the verdicts — the Codex seat is his ChatGPT quota, the rest is his OpenRouter money.
 
 **OpenRouter seats (1.6.0)** — the Qwen seat and the GLM seat, BOTH only when Tom asks, or
@@ -325,7 +329,8 @@ bash <skill_dir>/scripts/council_invoke.sh <prompt_file> <working_directory>
 - `COUNCIL_CODEX_EFFORT` — default: `medium`. **Effort follows the review tier (Tom 2026-08-20): `medium` routine / `high` hard-to-reverse / `xhigh` milestone-only.** Set explicitly per invocation when the tier calls for more; `config` defers to config.toml. Blanket xhigh is retired — it burned native quota + OpenRouter spend on routine diffs.
 - `COUNCIL_TIMEOUT` — default: `600` (seconds per advisor; raise to 900 for very large xhigh reviews)
 - `COUNCIL_GEMINI_BACKEND` — default: `auto` (`gemini` | `agy`)
-- `COUNCIL_GEMINI_MODEL` — optional model pin for either backend
+- `COUNCIL_GEMINI_MODEL` — optional model pin for either backend; always wins over routing
+- `COUNCIL_ROUND` — `routine|spec|hard|voice|milestone`: gemini-cli seat model (routine=gemini-4-hydrogen; spec/hard/voice=gemini-4-neon; milestone=gemini-4-carbon; thinking high). Default: from `COUNCIL_CODEX_EFFORT` (medium=routine, high=hard, xhigh=milestone). Pass `COUNCIL_ROUND=spec` on a spec/plan first round and `COUNCIL_ROUND=voice` on a voice-prompt gate; a rejected model retries once on gemini-4-argon with a visible `GEMINI FALLBACK:` line
 - `COUNCIL_OPENROUTER_SEATS` — same as `--openrouter` (flag wins): `qwen`, `glm`, or raw `vendor/model` ids, comma-separated. Needs `OPENROUTER_API_KEY`.
 - `COUNCIL_OPENROUTER_EFFORT` — default: follows `COUNCIL_CODEX_EFFORT` (`none` omits the reasoning block)
 - `COUNCIL_OPENROUTER_MAX_TOKENS` — default: `32000` (Qwen starves below ~32k)
@@ -556,9 +561,12 @@ Either (a) an advisor sandbox escape (rare — investigate as a real security is
   (`COUNCIL_CODEX_EFFORT` to change). Nitpick note: Sol had the highest review recall of any
   model measured but over-flagged nitpicks — the prompt templates keep the
   suppression instruction on for Astra until measured otherwise.
-- **Gemini**: backend-dependent. gemini-cli: model via `COUNCIL_GEMINI_MODEL`
-  → `-m`. agy: `COUNCIL_GEMINI_MODEL` → `--model` (run `agy models` for ids;
-  a Pro tier gives deeper reviews than the default Flash).
+- **Gemini**: backend-dependent. gemini-cli: routed per round (`COUNCIL_ROUND`, else
+  from the effort tier) to gemini-4-hydrogen / -neon / -carbon at high thinking;
+  `COUNCIL_GEMINI_MODEL` → `-m` pins and always wins. agy: `COUNCIL_GEMINI_MODEL` →
+  `--model` (run `agy models` for ids); unpinned it uses agy's own default.
+  The report line always names the model actually used; a rejected model retries once
+  on gemini-4-argon and says so (`GEMINI FALLBACK: ...`).
 - **OpenRouter seats** (`--openrouter qwen,glm`): model resolved at launch as
   the newest flagship of the family on OpenRouter's live listing (override via
   `COUNCIL_QWEN_MODEL` / `COUNCIL_GLM_MODEL`); effort follows

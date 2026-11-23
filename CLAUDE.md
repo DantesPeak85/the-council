@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-The Council is a **Claude Code Skill plugin** that convenes OpenAI Codex (`codex` CLI) and Google Gemini (`agy` CLI, Google's Antigravity client running Gemini 3.5 Flash by default) as an advisory board. Both run in parallel as effectively read-only consultants, returning independent analyses that Claude synthesizes into unified recommendations.
+The Council is a **Claude Code Skill plugin** that convenes OpenAI Codex (`codex` CLI) and Google Gemini (`gemini` CLI on a paid API key, routed per review round: Gemini 4 Hydrogen routine, Neon spec/hard/voice, Carbon milestone, all at high thinking; `agy` is the keyless fallback backend and uses its own default model) as an advisory board. Both run in parallel as effectively read-only consultants, returning independent analyses that Claude synthesizes into unified recommendations.
 
 This is **not** a Node/TypeScript application — it's a pure Bash + Markdown skill with no build system, package manager, or test framework.
 
@@ -50,7 +50,9 @@ All scripts use `set -euo pipefail`. Variables are quoted. Exit codes are meanin
 | `COUNCIL_TIMEOUT` | `600` | Max seconds per advisor (enforced via `gtimeout`/`timeout` when available) |
 | `AGY_PRINT_TIMEOUT` | `8m` | Override agy `--print-timeout`. agy's 5m default can race with `COUNCIL_TIMEOUT`; 8m keeps `COUNCIL_TIMEOUT` as the outer bound. |
 | `COUNCIL_GEMINI_BACKEND` | `auto` | Gemini backend: `auto`, `gemini`, or `agy` |
-| `COUNCIL_GEMINI_MODEL` | unset (backend default) | Pin the Gemini model for either backend |
+| `COUNCIL_GEMINI_MODEL` | unset (routed per round) | Explicit Gemini model pin for either backend; always wins over routing |
+| `COUNCIL_ROUND` | derived from `COUNCIL_CODEX_EFFORT` | `routine` (hydrogen) / `spec`, `hard`, `voice` (neon) / `milestone` (carbon) — gemini-cli seat model. Default mapping: medium=routine, high=hard, xhigh=milestone |
+| `COUNCIL_GEMINI_FALLBACK_MODEL` | `gemini-4-argon` | One visible retry when the routed/pinned model is rejected (`GEMINI FALLBACK:` banner + report line) |
 | `COUNCIL_SNAPSHOT_EXCLUDES` | (none) | Comma-separated pathspecs excluded from the safety-net snapshot |
 
 ## Temp Files

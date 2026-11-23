@@ -358,9 +358,9 @@ run PATH="$FAKE_BIN:$PATH" OPENROUTER_API_KEY="$FAKE_KEY" GEMINI_API_KEY=fake CO
 [[ $RC -eq 0 ]] || { cat "$TMPDIR_TEST/stderr.log"; fail "O21: full panel exit $RC"; }
 grep -q '^  Usage plan (estimates' "$TMPDIR_TEST/stdout.log" || fail "O21: usage plan header missing"
 grep -q '^    Codex   .*in ≈ 24.5k fixed + [0-9.]*k prompt = [0-9.]*k   out ≈ 12.0k (effort high; no hard cap on native Codex)   ≈ \$[0-9.]* + \$[0-9.]* = \$[0-9.]* (' "$TMPDIR_TEST/stdout.log" || fail "O21: Codex plan row wrong (got: $(grep '^    Codex' "$TMPDIR_TEST/stdout.log"))"
-grep -q '^    Gemini  .*in ≈ [0-9.]*k prompt   out: CLI-governed   cost: not metered here' "$TMPDIR_TEST/stdout.log" || fail "O21: Gemini plan row wrong"
+grep -q '^    Gemini  gemini-4-neon: in ≈ 7.8k fixed + [0-9.]*k prompt = [0-9.]*k   out ≈ 12.0k (thinking high; round hard)   ≈ \$[0-9.]* + \$[0-9.]* = \$[0-9.]* (Google list price' "$TMPDIR_TEST/stdout.log" || fail "O21: Gemini plan row wrong (got: $(grep '^    Gemini' "$TMPDIR_TEST/stdout.log"))"
 grep -q '^    Qwen  qwen/qwen3.10-max:floor: in ≈ [0-9.]*k   out ≤ 32.0k cap, ≈ 12.0k expected (effort high)   ≈ ' "$TMPDIR_TEST/stdout.log" || fail "O21: Qwen plan row wrong (got: $(grep '^    Qwen' "$TMPDIR_TEST/stdout.log"))"
-grep -q '^    Total ≈ \$[0-9.]* at list (Gemini excluded)   ceiling: 100000 estimated input tokens per seat' "$TMPDIR_TEST/stdout.log" || fail "O21: total/ceiling line wrong"
+grep -q '^    Total ≈ \$[0-9.]* at list   ceiling: 100000 estimated input tokens per seat' "$TMPDIR_TEST/stdout.log" || fail "O21: total/ceiling line wrong"
 grep -q 'ARGV:.*--json' "$TMPDIR_TEST/codex.log" || fail "O21: codex not launched with --json (no usage stream)"
 CU="$(find "$PROJECT/.council-tmp" -name codex_usage.log | head -1)"; [[ -s "$CU" ]] || fail "O21: codex_usage.log missing"
 grep -q 'input_tokens=30123 cached_input_tokens=7040 output_tokens=3532 reasoning_output_tokens=1525 est_cost_usd=\$' "$CU" || fail "O21: codex_usage.log content wrong: $(cat "$CU")"

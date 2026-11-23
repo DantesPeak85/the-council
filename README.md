@@ -82,7 +82,7 @@ Reasoning effort is set by the invoke script (`COUNCIL_CODEX_EFFORT=xhigh` by de
 
 **OpenRouter seats (1.6.0)** — optional extra advisors over HTTPS: `export OPENROUTER_API_KEY=…` (in `~/.zshenv`, never in a prompt), then `--openrouter qwen` (milestone-tier Qwen) or `--openrouter qwen,glm`, or any raw `vendor/model` id. Named seats resolve at launch to the newest flagship on OpenRouter's live listing and are sent with the `:floor` routing suffix (cheapest host serving that exact model — same weights, 2-3× price spread between hosts; `COUNCIL_OPENROUTER_ROUTING=none` disables, `nitro` picks the fastest). Explicit `COUNCIL_*_MODEL` pins and raw ids go verbatim. The banner prints the id and where it came from; `<seat>_usage.log` records which host served. **They are never a default seat: the panel is Codex + Gemini unless Tom asks for Qwen/GLM.**
 
-**Gemini** — no config file needed. To pin a model for either backend, export `COUNCIL_GEMINI_MODEL` (run `agy models` for agy ids; an AI Studio model id for gemini-cli). Left unset, each backend uses its own default.
+**Gemini** — no config file needed. On the gemini-cli backend (paid key) the model is routed per review round (v1.6.7): routine → `gemini-4-hydrogen`, spec / hard-to-reverse / voice-prompt gate → `gemini-4-neon`, milestone → `gemini-4-carbon`, thinking level high. The round comes from `COUNCIL_ROUND` or, if unset, from `COUNCIL_CODEX_EFFORT` (medium / high / xhigh). `COUNCIL_GEMINI_MODEL` pins a model for either backend and always wins (agy ids: `agy models`; gemini-cli ids are plain, e.g. `gemini-4-neon` — effort-suffixed ids are rejected on the API-key path). A rejected model retries ONCE on `gemini-4-argon`, announced by a `GEMINI FALLBACK:` banner and repeated in the report line; the report line always names the model actually used. The usage plan prices the Gemini seat (Hydrogen $1.50/$7.50, Neon $3/$15, Carbon and Argon $2/$10 until 30 Nov 2026 then $4/$20, per 1M tokens) and the actual cost feeds the cost alarm.
 
 ## Environment Variables
 
@@ -93,7 +93,9 @@ Reasoning effort is set by the invoke script (`COUNCIL_CODEX_EFFORT=xhigh` by de
 | `COUNCIL_TIMEOUT` | `600` | Max seconds per advisor (raise to `900` for very large xhigh reviews) |
 | `AGY_PRINT_TIMEOUT` | `8m` | agy `--print-timeout` override; must stay below `COUNCIL_TIMEOUT` |
 | `COUNCIL_GEMINI_BACKEND` | `auto` | Gemini backend: `auto`, `gemini`, or `agy` |
-| `COUNCIL_GEMINI_MODEL` | unset (backend default) | Pin the Gemini model for either backend |
+| `COUNCIL_GEMINI_MODEL` | unset (routed per round) | Explicit Gemini model pin for either backend; always wins over routing |
+| `COUNCIL_ROUND` | derived from `COUNCIL_CODEX_EFFORT` | `routine` (hydrogen) / `spec`, `hard`, `voice` (neon) / `milestone` (carbon) — gemini-cli seat model. Default mapping: medium=routine, high=hard, xhigh=milestone |
+| `COUNCIL_GEMINI_FALLBACK_MODEL` | `gemini-4-argon` | One visible retry when the routed/pinned model is rejected (`GEMINI FALLBACK:` banner + report line) |
 | `COUNCIL_SNAPSHOT_EXCLUDES` | (none) | Comma-separated pathspecs excluded from the safety-net snapshot |
 
 ## Safety

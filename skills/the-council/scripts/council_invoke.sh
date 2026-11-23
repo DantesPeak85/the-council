@@ -16,7 +16,13 @@
 #
 # Environment:
 #   CODEX_MODEL    — Override Codex model (default: auto, from ~/.codex/config.toml)
-#   COUNCIL_GEMINI_MODEL — Override Gemini model passed to agy --model (default: agy's own)
+#   COUNCIL_GEMINI_MODEL — Explicit Gemini model pin (gemini-cli `-m`, agy `--model`); ALWAYS wins over routing
+#   COUNCIL_ROUND — routine|spec|hard|voice|milestone: picks the gemini-cli seat's model (default: derived
+#                      from COUNCIL_CODEX_EFFORT: medium=routine, high=hard, xhigh=milestone).
+#                      routine -> gemini-4-hydrogen; spec|hard|voice -> gemini-4-neon; milestone -> gemini-4-carbon.
+#                      Thinking level is set to high (COUNCIL_GEMINI_THINKING) via a per-run settings override.
+#   COUNCIL_GEMINI_FALLBACK_MODEL — default gemini-4-argon; ONE visible retry when the routed/pinned model is rejected
+#   COUNCIL_TODAY — YYYY-MM-DD override for the date-aware Gemini price table (tests)
 #   COUNCIL_OPENROUTER_SEATS — Same as --openrouter (flag wins). Needs OPENROUTER_API_KEY.
 #   COUNCIL_OPENROUTER_EFFORT — reasoning effort for OpenRouter seats (default: COUNCIL_CODEX_EFFORT; `none` omits it)
 #   COUNCIL_OPENROUTER_MAX_TOKENS — default 32000 (Qwen starves below ~32k)
@@ -39,7 +45,7 @@ set -euo pipefail
 
 # Locate this script's directory for finding co-located resources
 # (e.g., council_sandbox.sb).
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"   # BASH_SOURCE: also right when sourced (COUNCIL_SOURCE_ONLY test seam)
 SANDBOX_PROFILE="$SCRIPT_DIR/council_sandbox.sb"
 # Post-run cost guard (COUNCIL_COST_ALARM_RATIO, default 3): compares actual cost to the usage-plan estimate.
 # shellcheck source=council_cost_alarm.sh
@@ -361,15 +367,56 @@ run_agy_pty() {
 # Enforcement layers (Council R1): `--approval-mode default` (headless =
 # unapprovable tool calls fail), sandbox-exec deny-write, minimal workspace.
 # All failure placeholders carry the [COUNCIL-ADVISOR-FAILURE] prefix.
+# Routing (v1.6.7, Tom D-20261123-10): the model is chosen per review round
+# (GEMINI_CLI_MODEL, resolved at startup). Pin tests 2026-11-23 on the paid key:
+# the plain ids gemini-4-hydrogen / -neon / -carbon are ACCEPTED by gemini-cli
+# 0.58; effort-suffixed ids (gemini-4-hydrogen-high) are REJECTED (ModelNotFound)
+# on the API-key path. Thinking level therefore travels in a per-run system
+# settings override (modelConfigs.overrides -> thinkingConfig.thinkingLevel).
+# Rejection at runtime -> ONE visible retry on the fallback model; never silent.
+gemini_rejection_reason() {  # $1 = raw capture; prints a short reason, or nothing if not a model rejection
+  local f="$1"
+  if grep -qiE 'ModelNotFoundError|is not found for API version' "$f" 2>/dev/null; then echo "model not found"
+  elif grep -qiE 'not supported for generateContent|unsupported model|invalid model|unknown model|requires --effort' "$f" 2>/dev/null; then echo "model unsupported"
+  fi
+}
 invoke_gemini_cli() {
+  local wanted="${GEMINI_CLI_MODEL:-}" fb="${COUNCIL_GEMINI_FALLBACK_MODEL:-gemini-4-argon}" status=0
+  local raw_pty="$TMPDIR_COUNCIL/gemini_cli_raw_pty.out" route="$TMPDIR_COUNCIL/gemini_route.txt"
+  printf 'wanted=%s\nattempted=%s\n' "$wanted" "$wanted" > "$route"
+  _gemini_cli_attempt "$wanted" 1 || status=$?
+  if [[ "$status" -ne 0 && -n "$wanted" && "$wanted" != "$fb" ]]; then
+    local reason; reason="$(gemini_rejection_reason "$raw_pty")"
+    if [[ -n "$reason" ]]; then
+      local banner="GEMINI FALLBACK: ${wanted} rejected (${reason}); using ${fb}"
+      echo "$banner" >&2
+      cp "$raw_pty" "$TMPDIR_COUNCIL/gemini_rejected_raw.out" 2>/dev/null || true
+      printf 'wanted=%s\nattempted=%s\nfallback=%s\n' "$wanted" "$fb" "$banner" > "$route"
+      status=0
+      _gemini_cli_attempt "$fb" 0 || status=$?
+    fi
+  fi
+  return "$status"
+}
+# $1 = model ('' = CLI default), $2 = 1 to apply the thinking-level override.
+_gemini_cli_attempt() {
+  local model="$1" apply_thinking="$2"
   local raw_pty="$TMPDIR_COUNCIL/gemini_cli_raw_pty.out"
   # Workspace: a dedicated subdir holding only the request file.
   local gemini_ws="$TMPDIR_COUNCIL/gemini_ws"
   mkdir -p "$gemini_ws"
   cp "$GEMINI_REQUEST_FILE" "$gemini_ws/review_request.md"
   local gemini_args=(-p "@review_request.md Respond fully to the review request in that file. Start your response with a VERDICT: line." --output-format json --approval-mode default)
-  if [[ -n "$COUNCIL_GEMINI_MODEL" ]]; then
-    gemini_args+=(-m "$COUNCIL_GEMINI_MODEL")
+  if [[ -n "$model" ]]; then
+    gemini_args+=(-m "$model")
+    local lvl; lvl="$(printf '%s' "${COUNCIL_GEMINI_THINKING:-high}" | tr '[:lower:]' '[:upper:]')"
+    local sys_settings="$TMPDIR_COUNCIL/gemini_system_settings.json"
+    if [[ "$apply_thinking" == "1" && -n "$lvl" && "$lvl" != "NONE" ]]; then
+      printf '{"modelConfigs":{"overrides":[{"match":{"model":"%s"},"modelConfig":{"generateContentConfig":{"thinkingConfig":{"thinkingLevel":"%s"}}}}]}}\n' "$model" "$lvl" > "$sys_settings"
+    else
+      printf '{}\n' > "$sys_settings"
+    fi
+    export GEMINI_CLI_SYSTEM_SETTINGS_PATH="$sys_settings"
   fi
   # Exported (subshell-local): an env-prefix on a *function* call is not
   # reliably exported to grandchildren.
@@ -419,6 +466,19 @@ print(resp)
 PYEOF
     return 3
   }
+  # Token stats + the model the CLI itself reports (stats.models keys) — best effort.
+  python3 - "$raw_pty" > "$TMPDIR_COUNCIL/gemini_stats.txt" 2>/dev/null <<'PYEOF_ST' || true
+import json, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace')
+try:
+    d = json.loads(raw[raw.find('{'):raw.rfind('}') + 1])
+    ms = d.get("stats", {}).get("models", {}) or {}
+    if not ms: sys.exit(0)
+    tot = lambda k: sum(int((v.get("tokens") or {}).get(k) or 0) for v in ms.values())
+    print(f"models={','.join(ms)} input={tot('prompt')} output={tot('candidates')} thoughts={tot('thoughts')}")
+except Exception:
+    pass
+PYEOF_ST
 }
 
 # pty + sandbox wrapper for gemini-cli. Mirrors run_agy_pty (Node CLIs hang
@@ -656,6 +716,20 @@ if base in known:
 print("? ? unknown")
 PYEOF_PRICE
 }
+# Gemini list prices, USD per 1M tokens (research 2026-11-23): date-aware — Carbon
+# and Argon are $2/$10 promo through 30 Nov 2026, $4/$20 from 1 Dec. "<in> <out>" or "? ?".
+gemini_price_per_million() {
+  python3 - "${1:-}" "${COUNCIL_TODAY:-$(date +%Y-%m-%d)}" <<'PYEOF_GP'
+import re, sys
+m, today = sys.argv[1:3]
+m = re.sub(r"-(low|medium|high|xhigh)$", "", m)
+promo = today < "2026-12-01"
+carbon = (2.0, 10.0) if promo else (4.0, 20.0)
+t = {"gemini-4-hydrogen": (1.5, 7.5), "gemini-4-neon": (3.0, 15.0), "gemini-4-carbon": carbon, "gemini-4-argon": carbon}
+print(f"{t[m][0]} {t[m][1]}" if m in t else "? ?")
+PYEOF_GP
+}
+COUNCIL_GEMINI_OVERHEAD_TOKENS="${COUNCIL_GEMINI_OVERHEAD_TOKENS:-7800}"   # measured 2026-11-23: a trivial prompt = ~7.8k input tokens
 usd() {  # $1 tokens, $2 price/M → "$0.31" or "?"
   [[ "$2" == "?" ]] && { echo "?"; return; }
   python3 -c 'import sys; print(f"${int(sys.argv[1])*float(sys.argv[2])/1e6:.2f}")' "$1" "$2"
@@ -1023,6 +1097,8 @@ TIMEOUT_SECS="${COUNCIL_TIMEOUT:-600}"
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-8m}"
 COUNCIL_GEMINI_BACKEND="${COUNCIL_GEMINI_BACKEND:-auto}"
 COUNCIL_GEMINI_MODEL="${COUNCIL_GEMINI_MODEL:-}"
+COUNCIL_GEMINI_THINKING="${COUNCIL_GEMINI_THINKING:-high}"
+COUNCIL_GEMINI_FALLBACK_MODEL="${COUNCIL_GEMINI_FALLBACK_MODEL:-gemini-4-argon}"
 
 # --- OpenRouter seats (v1.6.0): flag beats env; comma-separated; de-duplicated;
 # an unknown bare name fails HERE, before any advisor is launched. Named seats
@@ -1123,8 +1199,31 @@ else
   CODEX_MODEL_DISPLAY="$(grep -E '^model[[:space:]]*=' "${HOME}/.codex/config.toml" 2>/dev/null | head -1 | sed 's/model *= *"\(.*\)"/\1/')"
   CODEX_MODEL_DISPLAY="${CODEX_MODEL_DISPLAY:-unknown}"
 fi
+# --- Gemini per-round routing (Tom D-20261123-10) ---
+# Round: explicit COUNCIL_ROUND wins; else derived from the Codex effort tier
+# (medium=routine, high=hard, xhigh=milestone). gemini-cli only; agy keeps its
+# own default unless COUNCIL_GEMINI_MODEL pins one.
+COUNCIL_ROUND="${COUNCIL_ROUND:-}"
+GEMINI_ROUND_SOURCE="COUNCIL_ROUND"
+if [[ -z "$COUNCIL_ROUND" ]]; then
+  case "$COUNCIL_CODEX_EFFORT" in
+    xhigh) COUNCIL_ROUND=milestone ;; high) COUNCIL_ROUND=hard ;; *) COUNCIL_ROUND=routine ;;
+  esac
+  GEMINI_ROUND_SOURCE="COUNCIL_CODEX_EFFORT=${COUNCIL_CODEX_EFFORT}"
+fi
+case "$COUNCIL_ROUND" in
+  routine) GEMINI_ROUTED_MODEL="gemini-4-hydrogen" ;;
+  spec|hard|voice) GEMINI_ROUTED_MODEL="gemini-4-neon" ;;
+  milestone) GEMINI_ROUTED_MODEL="gemini-4-carbon" ;;
+  *) echo "ERROR: COUNCIL_ROUND='$COUNCIL_ROUND' invalid (routine|spec|hard|voice|milestone)." >&2; exit 1 ;;
+esac
+GEMINI_CLI_MODEL=""
 if [[ -n "$COUNCIL_GEMINI_MODEL" ]]; then
-  GEMINI_MODEL_DISPLAY="$COUNCIL_GEMINI_MODEL"
+  GEMINI_CLI_MODEL="$COUNCIL_GEMINI_MODEL"
+  GEMINI_MODEL_DISPLAY="$COUNCIL_GEMINI_MODEL (explicit COUNCIL_GEMINI_MODEL pin)"
+elif [[ "$COUNCIL_GEMINI_BACKEND_RESOLVED" == "gemini" ]]; then
+  GEMINI_CLI_MODEL="$GEMINI_ROUTED_MODEL"
+  GEMINI_MODEL_DISPLAY="$GEMINI_ROUTED_MODEL (round ${COUNCIL_ROUND} via ${GEMINI_ROUND_SOURCE}; thinking ${COUNCIL_GEMINI_THINKING:-high})"
 else
   GEMINI_MODEL_DISPLAY="backend default"
 fi
@@ -1283,7 +1382,7 @@ fi
 # mostly fixed overhead + the prompt, the output side is set by effort.
 USAGE_PLAN_MAX_INPUT=0
 USAGE_PLAN_TOTAL="?"
-CODEX_PLAN_EST="?"; SEAT_PLAN_EST=()
+CODEX_PLAN_EST="?"; SEAT_PLAN_EST=(); GEMINI_PLAN_EST="?"; GEMINI_COST_METERED=false
 if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
   echo "  Usage plan (estimates: 1 token ≈ ${TOKEN_BYTES} bytes; prices = OpenRouter list, USD; prompt ${PROMPT_BYTES} B ≈ $(ktok "$PROMPT_TOKENS_EST") tokens):"
   _costs=()
@@ -1297,7 +1396,16 @@ if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
   fi
   if [[ "$RUN_GEMINI" == "true" ]]; then
     (( PROMPT_TOKENS_EST > USAGE_PLAN_MAX_INPUT )) && USAGE_PLAN_MAX_INPUT=$PROMPT_TOKENS_EST
-    echo "    Gemini  ${GEMINI_MODEL_DISPLAY}: in ≈ $(ktok "$PROMPT_TOKENS_EST") prompt   out: CLI-governed   cost: not metered here (${COUNCIL_GEMINI_BACKEND_RESOLVED} plan)"
+    if [[ "$COUNCIL_GEMINI_BACKEND_RESOLVED" == "gemini" && -n "$GEMINI_CLI_MODEL" ]]; then
+      _in=$(( COUNCIL_GEMINI_OVERHEAD_TOKENS + PROMPT_TOKENS_EST )); _out=$(expected_output_tokens "$COUNCIL_GEMINI_THINKING")
+      read -r _pin _pout <<< "$(gemini_price_per_million "$GEMINI_CLI_MODEL")"
+      _cin=$(usd "$_in" "$_pin"); _cout=$(usd "$_out" "$_pout"); _c=$(usd_add "$_cin" "$_cout"); _costs+=("$_c")
+      GEMINI_PLAN_EST="$_c"; GEMINI_COST_METERED=true
+      (( _in > USAGE_PLAN_MAX_INPUT )) && USAGE_PLAN_MAX_INPUT=$_in
+      echo "    Gemini  ${GEMINI_CLI_MODEL}: in ≈ $(ktok "$COUNCIL_GEMINI_OVERHEAD_TOKENS") fixed + $(ktok "$PROMPT_TOKENS_EST") prompt = $(ktok "$_in")   out ≈ $(ktok "$_out") (thinking ${COUNCIL_GEMINI_THINKING}; round ${COUNCIL_ROUND})   ≈ ${_cin} + ${_cout} = ${_c} (Google list price, $( [[ "${COUNCIL_TODAY:-$(date +%Y-%m-%d)}" < "2026-12-01" ]] && echo "promo to 30 Nov" || echo "post-promo"))"
+    else
+      echo "    Gemini  ${GEMINI_MODEL_DISPLAY}: in ≈ $(ktok "$PROMPT_TOKENS_EST") prompt   out: CLI-governed   cost: not metered here (${COUNCIL_GEMINI_BACKEND_RESOLVED} plan)"
+    fi
   fi
   for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
     _in=$(( PROMPT_TOKENS_EST + 150 )); _out=$(expected_output_tokens "$COUNCIL_OPENROUTER_EFFORT")
@@ -1308,7 +1416,7 @@ if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
     echo "    $(seat_label "${SEAT_NAMES[$i]}")  ${SEAT_MODELS[$i]}: in ≈ $(ktok "$_in")   out ≤ $(ktok "$COUNCIL_OPENROUTER_MAX_TOKENS") cap, ≈ $(ktok "$_out") expected (effort ${COUNCIL_OPENROUTER_EFFORT})   ≈ ${_cin} + ${_cout} = ${_c} (${_psrc} price)"
   done
   USAGE_PLAN_TOTAL="$(usd_add ${_costs[@]+"${_costs[@]}"})"
-  echo "    Total ≈ ${USAGE_PLAN_TOTAL} at list (Gemini excluded)   ceiling: ${COUNCIL_MAX_INPUT_TOKENS} estimated input tokens per seat (COUNCIL_MAX_INPUT_TOKENS)"
+  echo "    Total ≈ ${USAGE_PLAN_TOTAL} at list$([[ "$RUN_GEMINI" == "true" && "$GEMINI_COST_METERED" != "true" ]] && echo " (Gemini excluded)")   ceiling: ${COUNCIL_MAX_INPUT_TOKENS} estimated input tokens per seat (COUNCIL_MAX_INPUT_TOKENS)"
   if (( USAGE_PLAN_MAX_INPUT > COUNCIL_MAX_INPUT_TOKENS )); then
     if [[ "$COUNCIL_ALLOW_OVERSIZE" == "1" ]]; then
       echo "  WARNING: estimated input ${USAGE_PLAN_MAX_INPUT} tokens exceeds COUNCIL_MAX_INPUT_TOKENS=${COUNCIL_MAX_INPUT_TOKENS} — launching anyway (COUNCIL_ALLOW_OVERSIZE=1)." | tee /dev/stderr
@@ -1446,6 +1554,29 @@ PYEOF_CU
 )"
 fi
 
+# --- Gemini actual usage + model actually used (gemini-cli stats; the CLI's own model field wins) ---
+GEMINI_USED_MODEL="${GEMINI_CLI_MODEL:-$GEMINI_MODEL_DISPLAY}"
+GEMINI_FALLBACK_NOTE=""; GEMINI_USAGE_LINE=""; GEMINI_ACTUAL_COST="?"
+if [[ "$RUN_GEMINI" == "true" && "$COUNCIL_GEMINI_BACKEND_RESOLVED" == "gemini" ]]; then
+  _route="$TMPDIR_COUNCIL/gemini_route.txt"
+  if [[ -s "$_route" ]]; then
+    _att="$(sed -n 's/^attempted=//p' "$_route" | head -1)"; [[ -n "$_att" ]] && GEMINI_USED_MODEL="$_att"
+    GEMINI_FALLBACK_NOTE="$(sed -n 's/^fallback=//p' "$_route" | head -1)"
+  fi
+  _st="$TMPDIR_COUNCIL/gemini_stats.txt"
+  if [[ -s "$_st" ]]; then
+    _rep="$(sed -n 's/.*models=\([^ ]*\).*/\1/p' "$_st" | head -1)"; [[ -n "$_rep" ]] && GEMINI_USED_MODEL="$_rep"
+    _gi="$(sed -n 's/.*input=\([0-9]*\).*/\1/p' "$_st")"; _go="$(sed -n 's/.*output=\([0-9]*\).*/\1/p' "$_st")"; _gt="$(sed -n 's/.*thoughts=\([0-9]*\).*/\1/p' "$_st")"
+    read -r _pin _pout <<< "$(gemini_price_per_million "${GEMINI_USED_MODEL%%,*}")"
+    GEMINI_ACTUAL_COST="$(python3 -c 'import sys
+pin,pout,i,o,t=sys.argv[1:6]
+print("?" if pin=="?" else f"${(int(i)*float(pin)+(int(o)+int(t))*float(pout))/1e6:.4f}")' "$_pin" "$_pout" "${_gi:-0}" "${_go:-0}" "${_gt:-0}")"
+    GEMINI_USAGE_LINE="$(python3 -c 'import sys
+i,o,t,c=sys.argv[1:5]
+print(f"{int(i)/1000:.1f}k in / {int(o)/1000:.1f}k out / {int(t)/1000:.1f}k reasoning ≈ {c} list")' "${_gi:-0}" "${_go:-0}" "${_gt:-0}" "$GEMINI_ACTUAL_COST")"
+  fi
+fi
+
 # --- Cost alarm: actual vs usage-plan estimate (ratio >= COUNCIL_COST_ALARM_RATIO, default 3) ---
 COST_ALARM_LINES=""
 if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
@@ -1453,6 +1584,9 @@ if [[ "$COUNCIL_USAGE_PLAN" != "off" ]]; then
     read -r _pin _pout _psrc <<< "$(price_per_million "" "openai/${CODEX_MODEL_DISPLAY}")"
     _act="$(council_codex_actual_cost "$CODEX_EVENTS" "$_pin" "$_pout" 2>/dev/null || echo '?')"
     _al="$(council_cost_check "Codex" "$_act" "$CODEX_PLAN_EST")" || COST_ALARM_LINES+="$_al"$'\n'
+  fi
+  if [[ "$RUN_GEMINI" == "true" && "$GEMINI_ACTUAL_COST" != "?" ]]; then
+    _al="$(council_cost_check "Gemini" "$GEMINI_ACTUAL_COST" "$GEMINI_PLAN_EST")" || COST_ALARM_LINES+="$_al"$'\n'
   fi
   for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
     _uf="$TMPDIR_COUNCIL/$(seat_slug "${SEAT_NAMES[$i]}")_usage.log"
@@ -1546,7 +1680,8 @@ fi
 if [[ "$RUN_GEMINI" == "true" ]]; then
   STATUS_MSG="(success)"
   [[ "$GEMINI_STATUS" -ne 0 ]] && STATUS_MSG="(failed${GEMINI_FAIL_REASON:+: $GEMINI_FAIL_REASON})"
-  echo "  Gemini: $GEMINI_OUT $STATUS_MSG"
+  _gm="model ${GEMINI_USED_MODEL}"
+  echo "  Gemini: $GEMINI_OUT $STATUS_MSG — ${_gm}${GEMINI_USAGE_LINE:+; $GEMINI_USAGE_LINE}${GEMINI_FALLBACK_NOTE:+; $GEMINI_FALLBACK_NOTE}"
 fi
 for ((i=0; i<${#SEAT_NAMES[@]}; i++)); do
   STATUS_MSG="(success)"
